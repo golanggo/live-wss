@@ -34,9 +34,9 @@ func InitRedis() error {
 func connect() error {
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{
-			"18.139.180.76:7001", // Redis集群节点1
-			"18.139.180.76:7002", // Redis集群节点2
-			"18.139.180.76:7003", // Redis集群节点3
+			"18.139.180.71:7001", // Redis集群节点1
+			"18.139.180.71:7002", // Redis集群节点2
+			"18.139.180.71:7003", // Redis集群节点3
 		},
 		// 配置密码
 		Password:         "root", // Redis密码
