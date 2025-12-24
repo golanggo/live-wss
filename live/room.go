@@ -483,7 +483,6 @@ func (r *Room) sendMessagesToViewer(viewer *Viewer, messageBytes [][]byte) {
 		// 可以考虑在这里触发唤醒，尝试重新发送
 		select {
 		case r.viewerWake <- viewer.vid:
-			viewer.roomReadCount.Add(int64(len(messageBytes)))
 			// 成功唤醒
 		default:
 			// 唤醒通道已满，可能有很多观众需要唤醒
@@ -493,8 +492,8 @@ func (r *Room) sendMessagesToViewer(viewer *Viewer, messageBytes [][]byte) {
 
 // 尝试发送消息到观众的环形缓冲区
 func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
-	writePos := viewer.roomWriteAto.Load()
-	nextWritePos := (writePos + 1) % int64(len(viewer.roomWriteSlots))
+	writePos := viewer.roomBroadcastWriteAto.Load()
+	nextWritePos := (writePos + 1) % int64(len(viewer.roomBroadcastSlots))
 
 	// 创建新消息
 	newItem := &item{
@@ -503,10 +502,10 @@ func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
 	}
 
 	// 直接覆盖（不检查是否满）
-	viewer.roomWriteSlots[writePos].Store(newItem)
-	viewer.roomWriteAto.Store(nextWritePos)
+	viewer.roomBroadcastSlots[writePos].Store(newItem)
+	viewer.roomBroadcastWriteAto.Store(nextWritePos)
 
-	viewer.roomWriteHasMessage.Store(1) // 告诉用户有新消息
+	viewer.hasMessage.Store(1) // 告诉用户有新消息
 
 	return true // 总是成功
 }

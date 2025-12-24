@@ -650,3 +650,31 @@ func RunMultiRoomBenchmarkWithRedis() {
 	fmt.Println("        Redis多房间压测完成")
 	fmt.Println(strings.Repeat("=", 42))
 }
+
+// RunRedisBenchmarkWith10KViewers Redis压力测试（1万个观众）
+func RunRedisBenchmarkWith10KViewers() {
+	fmt.Println("========================================")
+	fmt.Println("       Redis压力测试（1万人）开始")
+	fmt.Println("========================================")
+	fmt.Println("配置信息:")
+	fmt.Println("  - 房间数量: 1")
+	fmt.Println("  - 观众数: 10000")
+	fmt.Println("  - 每人发送消息数: 10")
+	fmt.Println("  - 消息发送间隔: 5秒")
+	fmt.Println("  - 数据源: Redis Stream")
+	fmt.Println("----------------------------------------")
+
+	config := BenchmarkConfig{
+		TotalViewers:     10000,             // 10000人
+		MessagePerViewer: 10,                // 每人10条
+		MessageInterval:  5 * time.Second,   // 5秒间隔
+		TestDuration:     20 * time.Minute,  // 最长20分钟
+		RoomNumber:       "redis_10k_room",
+		RoomName:         "Redis 10K压测间",
+		UseRedis:         true,              // 使用Redis数据源
+	}
+
+	benchmark := NewBenchmark(config)
+	benchmark.Run()
+	benchmark.PrintResult()
+}

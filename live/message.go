@@ -33,25 +33,6 @@ type Message struct {
 	Time     time.Time   `json:"timestamp"`
 }
 
-// var messagePool = sync.Pool{
-// 	New: func() interface{} {
-// 		return &Message{}
-// 	},
-// }
-
-// // 获取消息对象
-// func AcquireMessage() *Message {
-// 	return messagePool.Get().(*Message)
-// }
-
-// // 释放消息对象
-// func ReleaseMessage(msg *Message) {
-// 	// 重置对象状态
-// 	msg.Type = ""
-// 	msg.Data = ""
-// 	messagePool.Put(msg)
-// }
-
 // MessagePool 消息对象池，减少内存分配和GC压力
 // 4万人房间优化：重用消息对象，降低内存占用和GC频率
 var MessagePool = sync.Pool{

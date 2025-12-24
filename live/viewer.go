@@ -17,17 +17,15 @@ type ViewerType string
 type ViewerID string
 
 const (
-	UserTypeViewer ViewerType = "viewer" // 观看者
-	UserTypeAnchor ViewerType = "anchor" // 主播
+	ViewerTypeViewer ViewerType = "viewer" // 观看者
+	ViewerTypeAnchor ViewerType = "anchor" // 主播
 )
 
 // 4万人房间优化：合理设置通道容量，避免内存浪费和消息丢失
 const (
-	// 单个观众的消息通道容量，平衡内存使用和消息处理
-	ViewerChannelCapacity = 1000
 	// 环形缓冲区基础大小
 	baseRingBufferSize = 65536
-	// 环形缓冲区最大大小
+	// 环形缓冲区最大大小，是65536的4倍
 	maxRingBufferSize = 262144
 	// 环形缓冲区调整阈值百分比
 	bufferResizeThreshold = 80
@@ -54,28 +52,28 @@ type Viewer struct {
 	sendRoomWriteAto   atomic.Int64           // 下一条写位置（用户 goroutine 只改它）
 	sendRoomReadAto    atomic.Int64           // 房间收集器已读到的位置（收集器只改它）
 	sendRoomHasMessage atomic.Int32           // 是否有消息待处理
-	sendMessageCount   atomic.Int64           //发送到房间的消息总数
 	sendRoomBufSize    atomic.Int64           // 发送缓冲区大小
 	sendRoomBufMu      sync.Mutex             // 保护发送缓冲区的调整
 
 	// 改为切片以支持动态调整大小
-	roomWriteSlots      []atomic.Pointer[item] // 环形缓冲区，用于存储收集器读取的数据
-	roomWriteAto        atomic.Int64           // 下一条写位置（收集器只改它）
-	roomReadAto         atomic.Int64           // 下一条读位置,发送到用户网络层（用户 goroutine 只改它）
-	roomWriteHasMessage atomic.Int32           // 是否有消息待处理
-	roomWriteBufSize    atomic.Int64           // 接收缓冲区大小
-	roomWriteBufMu      sync.Mutex             // 保护接收缓冲区的调整
+	roomBroadcastSlots    []atomic.Pointer[item] // 环形缓冲区，用于存储收集器读取的数据
+	roomBroadcastWriteAto atomic.Int64           // 下一条写位置（收集器只改它）
+	roomBroadcastReadAto  atomic.Int64           // 下一条读位置,发送到用户网络层（用户 goroutine 只改它）
 
-	roomReadCount atomic.Int64 // 从房间读取的消息总数
+	hasMessage atomic.Int32 // 是否有消息待处理
+
+	roomWriteBufSize atomic.Int64 // 接收缓冲区大小
+	roomWriteBufMu   sync.Mutex   // 保护接收缓冲区的调整
 
 	Conn *websocket.Conn // WebSocket连接
 
+	startTime      time.Time // 加入房间时间
 	lastActiveTime time.Time // 最后活跃时间
 	lastPingTime   time.Time // 最后Ping时间
 
 	// 消息计数
-	sentMessages     atomic.Uint64 // 用户发送的消息数
-	receivedMessages atomic.Uint64 // 用户接收的消息数
+	sentMessageCnt     atomic.Int64 // 用户发送的消息数
+	receivedMessageCnt atomic.Int64 // 用户接收的消息数
 }
 
 type item struct {
@@ -97,6 +95,7 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 		name:     name,
 		userType: userType,
 
+		startTime:      now,
 		lastActiveTime: now,
 		lastPingTime:   now,
 
@@ -105,10 +104,10 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 		vctxCancel: vctxCancel,
 
 		// 初始化动态缓冲区
-		sendRoomSlots:    sendRoomSlots,
-		sendRoomBufSize:  atomic.Int64{},
-		roomWriteSlots:   roomWriteSlots,
-		roomWriteBufSize: atomic.Int64{},
+		sendRoomSlots:      sendRoomSlots,
+		sendRoomBufSize:    atomic.Int64{},
+		roomBroadcastSlots: roomWriteSlots,
+		roomWriteBufSize:   atomic.Int64{},
 	}
 }
 
@@ -131,7 +130,7 @@ func (v *Viewer) StartMessageReader() {
 	go v.messageReader()
 }
 
-// 将用户的发送的数据写入一个4096的环形缓冲区
+// Write 将用户的发送的数据写入一个环形缓冲区
 func (v *Viewer) Write(b []byte) {
 	buf := make([]byte, len(b))
 	copy(buf, b)
@@ -151,7 +150,9 @@ func (v *Viewer) Write(b []byte) {
 		used += bufSize
 	}
 
-	// 如果使用率超过阈值，尝试扩大缓冲区
+	// 如果使用率超过阈值，尝试扩大缓冲区，最多不超过最大缓冲区大小。
+	// 这样可以避免旧数据未处理被新数据覆盖。
+	// 如果这里内存不够用，可以考虑覆盖旧数据
 	if int(float64(used)/float64(bufSize)*100) > bufferResizeThreshold {
 		v.tryResizeSendBuffer()
 		bufSize = v.getSendRoomBufSize() // 更新缓冲区大小
@@ -159,6 +160,7 @@ func (v *Viewer) Write(b []byte) {
 
 	// 拿到下一个写槽位（原子自增）
 	w := v.sendRoomWriteAto.Add(1) - 1
+
 	// 使用模运算确保索引在缓冲区范围内
 	slotIndex := w % bufSize
 	slot := &v.sendRoomSlots[slotIndex]
@@ -170,7 +172,7 @@ func (v *Viewer) Write(b []byte) {
 
 	// 创建新消息
 	newItem := &item{
-		seq:  w + 1,
+		seq:  w + 1, //版本号：写入位置+1
 		data: buf,
 	}
 
@@ -178,9 +180,11 @@ func (v *Viewer) Write(b []byte) {
 	slot.Store(newItem)
 
 	// 增加发送消息计数
-	v.sentMessages.Add(1)
+	v.sentMessageCnt.Add(1)
 
 	// 只有当hasMessage为0时，才唤醒读取消息协程
+	// 等下次一次写入消息时，再唤醒读取消息协程
+	// 这样可以避免重复唤醒，提高效率
 	if v.sendRoomHasMessage.CompareAndSwap(0, 1) {
 		// 唤醒读取消息协程
 		if v.Room != nil {
@@ -238,8 +242,6 @@ func (v *Viewer) tryResizeSendBuffer() {
 	// 替换缓冲区
 	v.sendRoomSlots = newSlots
 	v.sendRoomBufSize.Store(int64(newSize))
-
-	fmt.Printf("观众 %s 发送缓冲区从 %d 调整到 %d\n", v.name, currentSize, newSize)
 }
 
 // 从websocket连接中读取消息，写入环形缓冲区
@@ -259,6 +261,7 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 			return
 		default:
 			_, msgByte, err := v.Conn.ReadMessage()
+
 			if err != nil {
 				// 连接关闭或发生错误，退出循环
 				// 关闭连接
@@ -284,21 +287,12 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 
 // CollectMessages 从环形缓冲区收集用户发送的消息
 func (v *Viewer) CollectMessages() [][]byte {
-	// 添加调试日志
+
 	read := v.sendRoomReadAto.Load()
 	write := v.sendRoomWriteAto.Load()
-	available := write - read
-
-	if available > 0 {
-		fmt.Printf("观众 %s 准备收集消息: read=%d, write=%d, available=%d\n", v.name, read, write, available)
-	}
-
-	// 1. 快照当前状态（原子操作）
-	read = v.sendRoomReadAto.Load()
-	write = v.sendRoomWriteAto.Load()
 
 	// 2. 计算可收集的消息数
-	available = write - read
+	available := write - read
 	if available <= 0 {
 		return nil
 	}
@@ -322,6 +316,8 @@ func (v *Viewer) CollectMessages() [][]byte {
 
 	// 4. 遍历收集
 	for i := int64(0); i < available; i++ {
+
+		//获取读取数据的位置
 		slot := &v.sendRoomSlots[(read+i)%bufSize]
 
 		// 快速检查
@@ -347,11 +343,11 @@ func (v *Viewer) CollectMessages() [][]byte {
 		}
 	}
 
-	// 5. 更新读指针
+	// 如果有手机到消息，增加对应统计数据。
+	// 数据收集完了，将viewer->是否有数据等待手机置为 0 避免下次
 	if collected > 0 {
-		fmt.Printf("观众 %s 收集到 %d 条消息\n", v.name, collected)
 		v.sendRoomReadAto.Add(collected)
-		v.sendMessageCount.Add(collected)
+		v.sentMessageCnt.Add(collected)
 		v.sendRoomHasMessage.Store(0)
 	}
 
@@ -374,7 +370,7 @@ func (v *Viewer) messageReader() {
 			return // 房间关闭
 		case <-ticker.C:
 			// 检查是否有待处理的消息
-			hasMessage := v.roomWriteHasMessage.Load()
+			hasMessage := v.hasMessage.Load()
 			if hasMessage == 1 {
 				fmt.Printf("观众 %s 检测到有消息待处理\n", v.name)
 				v.processBufferedMessages()
@@ -388,12 +384,12 @@ func (v *Viewer) messageReader() {
 
 // 处理缓冲的消息
 func (v *Viewer) processBufferedMessages() {
-	readPos := v.roomReadAto.Load()
-	writePos := v.roomWriteAto.Load()
+	readPos := v.roomBroadcastReadAto.Load()
+	writePos := v.roomBroadcastWriteAto.Load()
 
 	// 如果没有消息，直接返回
 	if readPos == writePos {
-		v.roomWriteHasMessage.Store(0)
+		v.hasMessage.Store(0)
 		return
 	}
 
@@ -404,31 +400,31 @@ func (v *Viewer) processBufferedMessages() {
 	messages := make([][]byte, 0)
 	messageCount := int64(0) // 统计本次处理的消息数
 	for readPos != writePos {
-		itemPtr := v.roomWriteSlots[readPos].Load()
+		itemPtr := v.roomBroadcastSlots[readPos].Load()
 		if itemPtr != nil {
 			messages = append(messages, itemPtr.data)
 			messageCount++ // 增加消息计数
-			v.roomWriteSlots[readPos].Store(nil)
+			v.roomBroadcastSlots[readPos].Store(nil)
 		}
-		readPos = (readPos + 1) % int64(len(v.roomWriteSlots))
+		readPos = (readPos + 1) % int64(len(v.roomBroadcastSlots))
 	}
 
 	// 更新读位置
-	v.roomReadAto.Store(readPos)
+	v.roomBroadcastReadAto.Store(readPos)
 
 	if len(messages) > 0 {
 		// 增加接收消息计数（无论是否有WebSocket连接都计数）
-		v.receivedMessages.Add(uint64(messageCount))
+		v.receivedMessageCnt.Add(int64(messageCount))
 
 		// 添加调试日志
-		fmt.Printf("观众 %s 处理了 %d 条消息，累计接收消息数: %d\n", v.name, len(messages), v.receivedMessages.Load())
+		fmt.Printf("观众 %s 处理了 %d 条消息，累计接收消息数: %d\n", v.name, len(messages), v.receivedMessageCnt.Load())
 
 		// 通过WebSocket发送消息
 		v.sendMessagesToWebSocket(messages)
 	}
 
 	// 重置消息标志
-	v.roomWriteHasMessage.Store(0)
+	v.hasMessage.Store(0)
 }
 
 // 通过WebSocket发送消息
@@ -523,13 +519,13 @@ func (v *Viewer) GetViewerID() ViewerID {
 }
 
 // SentMessages 获取用户发送的消息数
-func (v *Viewer) SentMessages() uint64 {
-	return v.sentMessages.Load()
+func (v *Viewer) SentMessages() int64 {
+	return v.sentMessageCnt.Load()
 }
 
 // ReceivedMessages 获取用户接收的消息数
-func (v *Viewer) ReceivedMessages() uint64 {
-	return v.receivedMessages.Load()
+func (v *Viewer) ReceivedMessages() int64 {
+	return v.receivedMessageCnt.Load()
 }
 
 // 获取观众名称
@@ -542,12 +538,7 @@ func (v *Viewer) GetID() ViewerID {
 	return v.vid
 }
 
-// SentMessageCount 获取用户发送的消息数
-func (v *Viewer) SentMessageCount() int64 {
-	return v.sendMessageCount.Load()
-}
-
-// RoomReadCount 获取用户从房间读取的消息数
-func (v *Viewer) RoomReadCount() int64 {
-	return v.roomReadCount.Load()
+// WatchTime 获取观众在房间中的观看时间
+func (v *Viewer) WatchTime() time.Duration {
+	return v.lastActiveTime.Sub(v.startTime)
 }
