@@ -22,7 +22,7 @@ func InitRedis() error {
 		if err != nil {
 			initErr = err
 		} else {
-			fmt.Sprint("Redis cluster connected")
+			fmt.Print("Redis cluster connected")
 		}
 
 		go reconnectionLoop()
@@ -32,12 +32,14 @@ func InitRedis() error {
 }
 
 func connect() error {
-	addr := getRedisAddrs()
-	fmt.Sprintf("Redis cluster nodes: %v", addr)
-
 	client := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:            addr,
-		Password:         "",
+		Addrs: []string{
+			"18.139.180.76:7001", // Redis集群节点1
+			"18.139.180.76:7002", // Redis集群节点2
+			"18.139.180.76:7003", // Redis集群节点3
+		},
+		// 配置密码
+		Password:         "root", // Redis密码
 		PoolSize:         200,
 		MinIdleConns:     200,
 		DialTimeout:      10 * time.Second,
@@ -56,7 +58,7 @@ func connect() error {
 	if _, err := client.Ping(ctx).Result(); err != nil {
 		return err
 	}
-	fmt.Sprint("Redis cluster connected")
+	fmt.Print("Redis cluster connected")
 	RDB = client
 	return nil
 }
@@ -68,32 +70,26 @@ func reconnectionLoop() {
 	for range ticker.C {
 		// 如果RDB为nil，尝试重新连接
 		if RDB == nil {
-			fmt.Sprint("Redis client is nil, attempting to reconnect...")
+			fmt.Print("Redis client is nil, attempting to reconnect...")
 			if err := connect(); err != nil {
-				fmt.Errorf("Redis reconnection failed: %v", err)
+				fmt.Printf("Redis reconnection failed: %v", err)
 			} else {
-				fmt.Sprint("Redis reconnection successful")
+				fmt.Print("Redis reconnection successful")
 			}
 		} else {
 			// 检查连接是否正常
 			if err := RDB.Ping(ctx).Err(); err != nil {
-				fmt.Errorf("Redis ping failed: %v, attempting to reconnect...", err)
+				fmt.Printf("Redis ping failed: %v, attempting to reconnect...", err)
 				// 先关闭现有连接
 				if err := RDB.Close(); err != nil {
-					fmt.Errorf("Error closing Redis connection: %v", err)
+					fmt.Printf("Error closing Redis connection: %v", err)
 				}
 				if err := connect(); err != nil {
-					fmt.Errorf("Redis reconnection failed: %v", err)
+					fmt.Printf("Redis reconnection failed: %v", err)
 				} else {
-					fmt.Sprint("Redis reconnection successful")
+					fmt.Print("Redis reconnection successful")
 				}
 			}
 		}
 	}
-}
-
-func getRedisAddrs() []string {
-	addrs := []string{}
-	return addrs
-
 }
