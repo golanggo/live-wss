@@ -45,6 +45,12 @@ type Room struct {
 
 	likeCount atomic.Uint32 // 点赞数
 
+	// 消息和字节数统计
+	messageSentCnt     atomic.Int64 // 房间发送的消息数
+	messageReceivedCnt atomic.Int64 // 房间接收的消息数
+	bytesSentCnt       atomic.Int64 // 房间发送的字节数
+	bytesReceivedCnt   atomic.Int64 // 房间接收的字节数
+
 	viewers   map[ViewerID]*Viewer // 观众列表（如果需要跟踪具体观众）
 	viewerMux sync.RWMutex         // 保护 viewerList 的互斥锁
 
@@ -96,15 +102,16 @@ func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMa
 }
 
 func (r *Room) sendBatch(messages []*Message) {
-	fmt.Printf("房间 %s 准备发送 %d 条消息到数据源\n", r.roomNumber, len(messages))
 	for _, msg := range messages {
 		if msg == nil || msg.Data == nil {
 			continue
 		}
-		// 钒写到 ring buffer
+		// 写入到 ring buffer
 		r.writeToMessageRingBuffer(msg)
+		// 更新房间发送统计
+		r.messageSentCnt.Add(1)
+		r.bytesSentCnt.Add(int64(len(msg.Data)))
 	}
-	fmt.Printf("房间 %s 完成发送消息到数据源\n", r.roomNumber)
 }
 
 // writeToMessageRingBuffer 写入消息到 ring buffer
@@ -265,20 +272,18 @@ func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*Message) {
 
 	rawMessages := viewer.CollectMessages()
 	for _, data := range rawMessages {
-		// 添加日志：打印用户发送的消息
 		*batch = append(*batch, &Message{
 			ViewerID: viewerID,
 			Data:     data,
 			Time:     time.Now(),
 		})
+		// 更新房间接收统计
+		r.messageReceivedCnt.Add(1)
+		r.bytesReceivedCnt.Add(int64(len(data)))
 	}
 
-	// 批次达到一定大小就发送（或者有消息就立即发送，避免延迟）
+	// 批次达到一定大小就发送，避免频繁发送
 	if len(*batch) >= 400 {
-		r.sendBatch(*batch)
-		*batch = (*batch)[:0]
-	} else if len(*batch) > 0 {
-		// 即使批次较小，也立即发送，避免消息延迟
 		r.sendBatch(*batch)
 		*batch = (*batch)[:0]
 	}
@@ -308,6 +313,9 @@ func (r *Room) processBatch(batch *[]*Message) {
 					Data:     data,
 					Time:     time.Now(),
 				})
+				// 更新房间接收统计
+				r.messageReceivedCnt.Add(1)
+				r.bytesReceivedCnt.Add(int64(len(data)))
 			}
 			count++
 		}
@@ -436,9 +444,6 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 	}
 	r.viewerMux.RUnlock()
 
-	// 记录广播信息
-	fmt.Printf("[STAT] 广播采样: 房间=%s, 消息数=%d, 观众数=%d\n", r.roomNumber, len(messages), len(viewers))
-
 	// 异步广播给所有观众，不等待完成
 	for _, viewer := range viewers {
 		go func(v *Viewer) {
@@ -459,34 +464,9 @@ func (r *Room) sendMessagesToViewer(viewer *Viewer, messageBytes [][]byte) {
 		return
 	}
 
-	// 记录发送消息的信息
-	fmt.Printf("房间 %s 向观众 %s 发送 %d 条消息\n", r.roomNumber, viewer.name, len(messageBytes))
-
 	// 尝试发送消息到观众的缓冲区
-	successCount := 0
-	failCount := 0
 	for _, msgBytes := range messageBytes {
-		if r.trySendToViewerBuffer(viewer, msgBytes) {
-			successCount++
-		} else {
-			failCount++
-		}
-	}
-
-	// 记录发送结果
-	fmt.Printf("房间 %s 向观众 %s 发送完成: 成功 %d, 失败 %d\n", r.roomNumber, viewer.name, successCount, failCount)
-
-	// 如果有失败的消息，可以降级处理
-	if failCount > 0 {
-		// 缓冲区已满，可以降级处理（如丢弃、记录日志等）
-		log.Printf("Viewer %s buffer is full, dropping %d messages", viewer.vid, failCount)
-		// 可以考虑在这里触发唤醒，尝试重新发送
-		select {
-		case r.viewerWake <- viewer.vid:
-			// 成功唤醒
-		default:
-			// 唤醒通道已满，可能有很多观众需要唤醒
-		}
+		r.trySendToViewerBuffer(viewer, msgBytes)
 	}
 }
 
@@ -517,6 +497,12 @@ type DataSource interface {
 
 	// GetMessage 从数据源获取消息
 	GetMessage(ctx context.Context, roomNumber RoomNumber) []*Message
+
+	// GetRedisBytesSent 获取发送到Redis的字节数
+	GetRedisBytesSent(roomNumber RoomNumber) int64
+
+	// GetRedisBytesRecv 获取从Redis接收的字节数
+	GetRedisBytesRecv(roomNumber RoomNumber) int64
 }
 
 // GetCapacity 获取房间当前最大容纳人数
@@ -604,4 +590,30 @@ func (r *Room) PrintRoomInfo() {
 	fmt.Printf("  点赞数: %d\n", r.likeCount.Load())
 	fmt.Printf("  消息缓冲区中的消息数量: %d\n", r.ViewerSendRoomMessageCount())
 	fmt.Printf("  直播状态: %v\n", r.isOpenRoom.Load())
+}
+
+// BytesSent 获取房间发送的总字节数
+func (r *Room) BytesSent() int64 {
+	return r.bytesSentCnt.Load()
+}
+
+// BytesReceived 获取房间接收的总字节数
+func (r *Room) BytesReceived() int64 {
+	return r.bytesReceivedCnt.Load()
+}
+
+// RedisBytesSent 获取房间发送到Redis的字节数
+func (r *Room) RedisBytesSent() int64 {
+	if r.dataSource != nil {
+		return r.dataSource.GetRedisBytesSent(r.roomNumber)
+	}
+	return 0
+}
+
+// RedisBytesRecv 获取房间从Redis接收的字节数
+func (r *Room) RedisBytesRecv() int64 {
+	if r.dataSource != nil {
+		return r.dataSource.GetRedisBytesRecv(r.roomNumber)
+	}
+	return 0
 }

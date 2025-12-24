@@ -41,6 +41,10 @@ type StreamHandler struct {
 	// 用于向房间传递消息的通道
 	messageChan chan *Message
 
+	// Redis带宽统计
+	redisBytesSent atomic.Int64 // 发送到Redis的字节数
+	redisBytesRecv atomic.Int64 // 从Redis接收的字节数
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -307,6 +311,8 @@ func (h *StreamHandler) sendBatch(messages []*Message) {
 				fmt.Printf("序列化消息失败: %v\n", err)
 				continue
 			}
+			// 统计发送到Redis的字节数
+			h.redisBytesSent.Add(int64(len(data)))
 			pipe.XAdd(ctx, &redis.XAddArgs{
 				Stream: h.streamKey,
 				Values: map[string]interface{}{
@@ -394,6 +400,8 @@ func (h *StreamHandler) runReceiver() {
 					messageCount++
 					// 解析消息
 					if data, ok := msg.Values["data"].(string); ok {
+						// 统计从Redis接收的字节数
+						h.redisBytesRecv.Add(int64(len(data)))
 						var message Message
 						if err := json.Unmarshal([]byte(data), &message); err == nil {
 							// 发送到消息环形缓冲区
@@ -491,4 +499,22 @@ func (h *StreamHandler) getActualUserCount() int {
 	// 临时实现，可以根据房间号或其他信息估算用户数
 	// 这里我们简单返回一个默认值
 	return 10000
+}
+
+// GetRedisBytesSent 获取发送到Redis的字节数
+func (s *SimpleRedisStream) GetRedisBytesSent(roomNumber RoomNumber) int64 {
+	h, ok := s.streams[string(roomNumber)]
+	if !ok {
+		return 0
+	}
+	return h.redisBytesSent.Load()
+}
+
+// GetRedisBytesRecv 获取从Redis接收的字节数
+func (s *SimpleRedisStream) GetRedisBytesRecv(roomNumber RoomNumber) int64 {
+	h, ok := s.streams[string(roomNumber)]
+	if !ok {
+		return 0
+	}
+	return h.redisBytesRecv.Load()
 }

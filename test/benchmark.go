@@ -26,21 +26,34 @@ type BenchmarkConfig struct {
 
 // 压测结果
 type BenchmarkResult struct {
-	TotalViewers      int64         // 总观众数
-	ActiveViewers     int64         // 活跃观众数
-	TotalMessagesSent int64         // 总发送消息数
-	TotalMessagesRecv int64         // 总接收消息数
-	AvgLatency        time.Duration // 平均延迟
-	MaxLatency        time.Duration // 最大延迟
-	MinLatency        time.Duration // 最小延迟
-	Throughput        float64       // 吞吐量（消息/秒）
-	Duration          time.Duration // 测试持续时间
-	MemoryUsed        uint64        // 内存使用量
-	Goroutines        int           // Goroutine数量
-	JoinSuccessCount  int64         // 加入成功数
-	JoinFailCount     int64         // 加入失败数
-	SendSuccessCount  int64         // 发送成功数
-	SendFailCount     int64         // 发送失败数
+	TotalViewers           int64         // 总观众数
+	ActiveViewers          int64         // 活跃观众数
+	TotalMessagesSent      int64         // 总发送消息数
+	TotalMessagesRecv      int64         // 总接收消息数
+	TotalBytesSent         int64         // 总发送字节数
+	TotalBytesRecv         int64         // 总接收字节数
+	RedisBytesSent         int64         // Redis层发送字节数
+	RedisBytesRecv         int64         // Redis层接收字节数
+	WebSocketBytesSent     int64         // WebSocket层发送字节数
+	WebSocketBytesRecv     int64         // WebSocket层接收字节数
+	AvgMessageSize         float64       // 平均消息大小
+	SendBandwidth          float64       // 总发送带宽（字节/秒）
+	RecvBandwidth          float64       // 总接收带宽（字节/秒）
+	RedisSendBandwidth     float64       // Redis层发送带宽（字节/秒）
+	RedisRecvBandwidth     float64       // Redis层接收带宽（字节/秒）
+	WebSocketSendBandwidth float64       // WebSocket层发送带宽（字节/秒）
+	WebSocketRecvBandwidth float64       // WebSocket层接收带宽（字节/秒）
+	AvgLatency             time.Duration // 平均延迟
+	MaxLatency             time.Duration // 最大延迟
+	MinLatency             time.Duration // 最小延迟
+	Throughput             float64       // 吞吐量（消息/秒）
+	Duration               time.Duration // 测试持续时间
+	MemoryUsed             uint64        // 内存使用量
+	Goroutines             int           // Goroutine数量
+	JoinSuccessCount       int64         // 加入成功数
+	JoinFailCount          int64         // 加入失败数
+	SendSuccessCount       int64         // 发送成功数
+	SendFailCount          int64         // 发送失败数
 }
 
 // 压测器
@@ -147,6 +160,16 @@ func (r *RedisDataSourceAdapter) GetMessage(ctx context.Context, roomNumber live
 	return r.stream.GetMessage(ctx, roomNumber)
 }
 
+// GetRedisBytesSent 获取发送到Redis的字节数
+func (r *RedisDataSourceAdapter) GetRedisBytesSent(roomNumber live.RoomNumber) int64 {
+	return r.stream.GetRedisBytesSent(roomNumber)
+}
+
+// GetRedisBytesRecv 获取从Redis接收的字节数
+func (r *RedisDataSourceAdapter) GetRedisBytesRecv(roomNumber live.RoomNumber) int64 {
+	return r.stream.GetRedisBytesRecv(roomNumber)
+}
+
 // createRoom 创建房间
 func (b *Benchmark) createRoom() {
 	fmt.Println("[2/6] 创建直播房间...")
@@ -200,7 +223,7 @@ func (b *Benchmark) createAndJoinViewer(idx int) {
 	viewerID := live.ViewerID(fmt.Sprintf("viewer_%d", idx))
 	viewerName := fmt.Sprintf("观众%d", idx)
 
-	viewer := live.NewViewer(b.ctx, viewerID, viewerName, live.UserTypeViewer)
+	viewer := live.NewViewer(b.ctx, viewerID, viewerName, live.ViewerTypeViewer)
 
 	err := b.room.JoinRoom(viewer)
 	if err != nil {
@@ -353,18 +376,71 @@ func (b *Benchmark) collectResults() {
 	b.result.MemoryUsed = memStats.Alloc
 	b.result.Goroutines = runtime.NumGoroutine()
 
-	// 统计消息接收数
-	fmt.Printf("开始统计消息接收数，观众数量: %d\n", len(b.viewers))
+	// 统计消息接收数和字节数
+	fmt.Printf("开始统计消息接收数和字节数，观众数量: %d\n", len(b.viewers))
 	totalReceived := int64(0)
+	totalBytesSent := int64(0)
+	totalBytesReceived := int64(0)
+
 	for i, v := range b.viewers {
 		received := v.ReceivedMessages()
 		totalReceived += int64(received)
+
+		// 收集字节数
+		bytesSent := v.SentBytes()
+		bytesReceived := v.ReceivedBytes()
+		totalBytesSent += bytesSent
+		totalBytesReceived += bytesReceived
+
 		if i < 10 { // 只打印前10个观众的接收消息数
-			fmt.Printf("  观众 %s 接收消息数: %d\n", v.GetName(), received)
+			fmt.Printf("  观众 %s 接收消息数: %d, 发送字节: %d, 接收字节: %d\n", v.GetName(), received, bytesSent, bytesReceived)
 		}
 	}
+
+	// 收集房间层面的字节统计（WebSocket层）
+	websocketBytesSent := b.room.BytesSent()
+	websocketBytesReceived := b.room.BytesReceived()
+
+	// 收集Redis层带宽统计
+	redisBytesSent := b.room.RedisBytesSent()
+	redisBytesReceived := b.room.RedisBytesRecv()
+
+	// 计算总字节数
+	totalBytesSent = websocketBytesSent + redisBytesSent
+	totalBytesReceived = websocketBytesReceived + redisBytesReceived
+
 	b.result.TotalMessagesRecv = totalReceived
+	b.result.TotalBytesSent = totalBytesSent
+	b.result.TotalBytesRecv = totalBytesReceived
+	b.result.RedisBytesSent = redisBytesSent
+	b.result.RedisBytesRecv = redisBytesReceived
+	b.result.WebSocketBytesSent = websocketBytesSent
+	b.result.WebSocketBytesRecv = websocketBytesReceived
+
 	fmt.Printf("总计接收消息数: %d\n", totalReceived)
+	fmt.Printf("总计发送字节数: %d\n", totalBytesSent)
+	fmt.Printf("总计接收字节数: %d\n", totalBytesReceived)
+
+	// 计算平均消息大小
+	if b.result.TotalMessagesSent > 0 {
+		b.result.AvgMessageSize = float64(totalBytesSent) / float64(b.result.TotalMessagesSent)
+	}
+
+	// 计算带宽
+	testSeconds := b.result.Duration.Seconds()
+	if testSeconds > 0 {
+		// 总带宽
+		b.result.SendBandwidth = float64(totalBytesSent) / testSeconds
+		b.result.RecvBandwidth = float64(totalBytesReceived) / testSeconds
+
+		// Redis层带宽
+		b.result.RedisSendBandwidth = float64(b.result.RedisBytesSent) / testSeconds
+		b.result.RedisRecvBandwidth = float64(b.result.RedisBytesRecv) / testSeconds
+
+		// WebSocket层带宽
+		b.result.WebSocketSendBandwidth = float64(b.result.WebSocketBytesSent) / testSeconds
+		b.result.WebSocketRecvBandwidth = float64(b.result.WebSocketBytesRecv) / testSeconds
+	}
 }
 
 // calculateLatencyStats 计算延迟统计
@@ -430,6 +506,27 @@ func (b *Benchmark) PrintResult() {
 	fmt.Printf("  发送成功率:   %.2f%%\n", float64(r.SendSuccessCount)/float64(r.TotalMessagesSent)*100)
 	fmt.Println("")
 
+	fmt.Println("【带宽统计】")
+	fmt.Printf("  总发送字节:   %d 字节 (%.2f MB)\n", r.TotalBytesSent, float64(r.TotalBytesSent)/1024/1024)
+	fmt.Printf("  总接收字节:   %d 字节 (%.2f MB)\n", r.TotalBytesRecv, float64(r.TotalBytesRecv)/1024/1024)
+	fmt.Printf("  平均消息大小: %.2f 字节\n", r.AvgMessageSize)
+	fmt.Printf("  发送带宽:     %.2f KB/s\n", r.SendBandwidth/1024)
+	fmt.Printf("  接收带宽:     %.2f KB/s\n", r.RecvBandwidth/1024)
+	fmt.Printf("  总带宽:       %.2f KB/s\n", (r.SendBandwidth+r.RecvBandwidth)/1024)
+	fmt.Println("  ")
+	fmt.Println("  【Redis层带宽】")
+	fmt.Printf("    Redis发送字节: %d 字节 (%.2f MB)\n", r.RedisBytesSent, float64(r.RedisBytesSent)/1024/1024)
+	fmt.Printf("    Redis接收字节: %d 字节 (%.2f MB)\n", r.RedisBytesRecv, float64(r.RedisBytesRecv)/1024/1024)
+	fmt.Printf("    Redis发送带宽: %.2f KB/s\n", r.RedisSendBandwidth/1024)
+	fmt.Printf("    Redis接收带宽: %.2f KB/s\n", r.RedisRecvBandwidth/1024)
+	fmt.Println("  ")
+	fmt.Println("  【WebSocket层带宽】")
+	fmt.Printf("    WebSocket发送字节: %d 字节 (%.2f MB)\n", r.WebSocketBytesSent, float64(r.WebSocketBytesSent)/1024/1024)
+	fmt.Printf("    WebSocket接收字节: %d 字节 (%.2f MB)\n", r.WebSocketBytesRecv, float64(r.WebSocketBytesRecv)/1024/1024)
+	fmt.Printf("    WebSocket发送带宽: %.2f KB/s\n", r.WebSocketSendBandwidth/1024)
+	fmt.Printf("    WebSocket接收带宽: %.2f KB/s\n", r.WebSocketRecvBandwidth/1024)
+	fmt.Println("")
+
 	fmt.Println("【性能指标】")
 	fmt.Printf("  测试耗时:     %v\n", r.Duration.Truncate(time.Millisecond))
 	fmt.Printf("  吞吐量:       %.2f msg/s\n", r.Throughput)
@@ -480,8 +577,32 @@ func RunQuickBenchmark() {
 }
 
 // RunHighLoadBenchmark 高负载压测（4万人）
+// RunHighLoadBenchmark 高负载Redis压测（40000观众，5条消息/人）
 func RunHighLoadBenchmark() {
-	panic("内存数据源测试已移除，请使用 RunSimpleRedisBenchmark()")
+	fmt.Println("========================================")
+	fmt.Println("          高负载Redis压力测试开始")
+	fmt.Println("========================================")
+	fmt.Println("配置信息:")
+	fmt.Println("  - 房间数量: 1")
+	fmt.Println("  - 观众数: 40000")
+	fmt.Println("  - 每人发送消息数: 5")
+	fmt.Println("  - 消息发送间隔: 8秒")
+	fmt.Println("  - 数据源: Redis Stream")
+	fmt.Println("----------------------------------------")
+
+	config := BenchmarkConfig{
+		TotalViewers:     40000,            // 40000人
+		MessagePerViewer: 5,                // 每人5条
+		MessageInterval:  8 * time.Second,  // 8秒间隔
+		TestDuration:     30 * time.Minute, // 最长30分钟
+		RoomNumber:       "high_load_redis_room",
+		RoomName:         "高负载Redis压测间",
+		UseRedis:         true, // 使用Redis数据源
+	}
+
+	benchmark := NewBenchmark(config)
+	benchmark.Run()
+	benchmark.PrintResult()
 }
 
 // RunMultiRoomBenchmark 多房间压测（10个房间，每个房间500人）
@@ -651,7 +772,7 @@ func RunMultiRoomBenchmarkWithRedis() {
 	fmt.Println(strings.Repeat("=", 42))
 }
 
-// RunRedisBenchmarkWith10KViewers Redis压力测试（1万个观众）
+// RunRedisBenchmarkWith10KViewers Redis压力测试（1万人）
 func RunRedisBenchmarkWith10KViewers() {
 	fmt.Println("========================================")
 	fmt.Println("       Redis压力测试（1万人）开始")
@@ -665,13 +786,71 @@ func RunRedisBenchmarkWith10KViewers() {
 	fmt.Println("----------------------------------------")
 
 	config := BenchmarkConfig{
-		TotalViewers:     10000,             // 10000人
-		MessagePerViewer: 10,                // 每人10条
-		MessageInterval:  5 * time.Second,   // 5秒间隔
-		TestDuration:     20 * time.Minute,  // 最长20分钟
+		TotalViewers:     10000,            // 10000人
+		MessagePerViewer: 10,               // 每人10条
+		MessageInterval:  5 * time.Second,  // 5秒间隔
+		TestDuration:     20 * time.Minute, // 最长20分钟
 		RoomNumber:       "redis_10k_room",
 		RoomName:         "Redis 10K压测间",
-		UseRedis:         true,              // 使用Redis数据源
+		UseRedis:         true, // 使用Redis数据源
+	}
+
+	benchmark := NewBenchmark(config)
+	benchmark.Run()
+	benchmark.PrintResult()
+}
+
+// RunCustomRedisBenchmark 自定义Redis压测（10000观众，20条消息/人，3分钟）
+func RunCustomRedisBenchmark() {
+	fmt.Println("========================================")
+	fmt.Println("          自定义Redis压力测试开始")
+	fmt.Println("========================================")
+	fmt.Println("配置信息:")
+	fmt.Println("  - 房间数量: 1")
+	fmt.Println("  - 观众数: 10000")
+	fmt.Println("  - 每人发送消息数: 20")
+	fmt.Println("  - 消息发送间隔: 1秒")
+	fmt.Println("  - 测试持续时间: 3分钟")
+	fmt.Println("  - 数据源: Redis Stream")
+	fmt.Println("----------------------------------------")
+
+	config := BenchmarkConfig{
+		TotalViewers:     10000,           // 10000人
+		MessagePerViewer: 20,              // 每人20条
+		MessageInterval:  1 * time.Second, // 1秒间隔
+		TestDuration:     3 * time.Minute, // 3分钟
+		RoomNumber:       "custom_redis_room",
+		RoomName:         "自定义Redis压测间",
+		UseRedis:         true, // 使用Redis数据源
+	}
+
+	benchmark := NewBenchmark(config)
+	benchmark.Run()
+	benchmark.PrintResult()
+}
+
+// Run10KViewer3SecIntervalBenchmark 测试10000观众每人每3秒发一条消息
+func Run10KViewer3SecIntervalBenchmark() {
+	fmt.Println("========================================")
+	fmt.Println("        10000观众3秒消息间隔测试开始")
+	fmt.Println("========================================")
+	fmt.Println("配置信息:")
+	fmt.Println("  - 房间数量: 1")
+	fmt.Println("  - 观众数: 10000")
+	fmt.Println("  - 每人发送消息数: 100") // 足够多的消息，确保测试期间能持续发送
+	fmt.Println("  - 消息发送间隔: 3秒")
+	fmt.Println("  - 测试持续时间: 3分钟")
+	fmt.Println("  - 数据源: Redis Stream")
+	fmt.Println("----------------------------------------")
+
+	config := BenchmarkConfig{
+		TotalViewers:     10000,           // 10000人
+		MessagePerViewer: 100,             // 每人100条（足够多）
+		MessageInterval:  3 * time.Second, // 3秒间隔
+		TestDuration:     3 * time.Minute, // 3分钟测试时长
+		RoomNumber:       "10k_3sec_room",
+		RoomName:         "10K观众3秒间隔测试间",
+		UseRedis:         true, // 使用Redis数据源
 	}
 
 	benchmark := NewBenchmark(config)

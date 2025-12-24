@@ -10,7 +10,7 @@ import (
 
 func main() {
 	// 命令行参数
-	mode := flag.String("mode", "quick", "压测模式: quick(快速), normal(常规), redis(Redis), high(高负载), redis10k(1万观众Redis)")
+	mode := flag.String("mode", "quick", "压测模式: quick(快速), normal(常规), redis(Redis), high(高负载), redis10k(1万观众Redis), custom(自定义), 10k-3sec")
 	flag.Parse()
 
 	fmt.Println("========================================")
@@ -35,9 +35,14 @@ func main() {
 	case "redis10k":
 		fmt.Println("执行Redis压测 (10000观众, 10消息/人)")
 		test.RunRedisBenchmarkWith10KViewers()
+	case "custom":
+		fmt.Println("执行自定义Redis压测")
+		test.RunCustomRedisBenchmark()
+	case "10k-3sec":
+		test.Run10KViewer3SecIntervalBenchmark()
 	default:
 		fmt.Printf("未知模式: %s\n", *mode)
-		fmt.Println("可用模式: quick, normal, redis, high, redis10k")
+		fmt.Println("可用模式: quick, normal, redis, high, redis10k, custom, 10k-3sec")
 		os.Exit(1)
 	}
 }

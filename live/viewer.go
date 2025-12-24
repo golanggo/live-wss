@@ -21,12 +21,9 @@ const (
 	ViewerTypeAnchor ViewerType = "anchor" // 主播
 )
 
-// 4万人房间优化：合理设置通道容量，避免内存浪费和消息丢失
 const (
-	// 环形缓冲区基础大小
-	baseRingBufferSize = 65536
-	// 环形缓冲区最大大小，是65536的4倍
-	maxRingBufferSize = 262144
+	baseRingBufferSize = 32768
+	maxRingBufferSize  = 64936
 	// 环形缓冲区调整阈值百分比
 	bufferResizeThreshold = 80
 )
@@ -74,6 +71,9 @@ type Viewer struct {
 	// 消息计数
 	sentMessageCnt     atomic.Int64 // 用户发送的消息数
 	receivedMessageCnt atomic.Int64 // 用户接收的消息数
+	// 字节数统计
+	sentBytesCnt     atomic.Int64 // 用户发送的字节数
+	receivedBytesCnt atomic.Int64 // 用户接收的字节数
 }
 
 type item struct {
@@ -181,6 +181,8 @@ func (v *Viewer) Write(b []byte) {
 
 	// 增加发送消息计数
 	v.sentMessageCnt.Add(1)
+	// 增加发送字节数统计
+	v.sentBytesCnt.Add(int64(len(buf)))
 
 	// 只有当hasMessage为0时，才唤醒读取消息协程
 	// 等下次一次写入消息时，再唤醒读取消息协程
@@ -343,8 +345,7 @@ func (v *Viewer) CollectMessages() [][]byte {
 		}
 	}
 
-	// 如果有手机到消息，增加对应统计数据。
-	// 数据收集完了，将viewer->是否有数据等待手机置为 0 避免下次
+	// 如果有收集到消息，增加对应统计数据
 	if collected > 0 {
 		v.sendRoomReadAto.Add(collected)
 		v.sentMessageCnt.Add(collected)
@@ -437,6 +438,8 @@ func (v *Viewer) sendMessagesToWebSocket(messages [][]byte) {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
 			return
 		}
+		// 增加接收字节数统计
+		v.receivedBytesCnt.Add(int64(len(msg)))
 		// 更新最后活跃时间
 		v.lastActiveTime = time.Now()
 	}
@@ -517,6 +520,16 @@ func (v *Viewer) SentMessages() int64 {
 // ReceivedMessages 获取用户接收的消息数
 func (v *Viewer) ReceivedMessages() int64 {
 	return v.receivedMessageCnt.Load()
+}
+
+// SentBytes 获取用户发送的字节数
+func (v *Viewer) SentBytes() int64 {
+	return v.sentBytesCnt.Load()
+}
+
+// ReceivedBytes 获取用户接收的字节数
+func (v *Viewer) ReceivedBytes() int64 {
+	return v.receivedBytesCnt.Load()
 }
 
 // 获取观众名称
