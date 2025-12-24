@@ -1,4 +1,4 @@
-module live-wss
+module github.com/golanggo/live-wss
 
 go 1.23.10
 
