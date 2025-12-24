@@ -392,7 +392,7 @@ func (r *Room) readFromMessageRingBuffer() []*Message {
 	return messages
 }
 
-// 房间广播消恫处理器
+// 房间广播消息处理器
 func (r *Room) broadcastHandler() {
 
 	ticker := time.NewTicker(10 * time.Millisecond) // 增可不漑消恫速度，给观众更多时间处理
@@ -419,8 +419,9 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 		return
 	}
 
-	// 序列化消息
-	messageBytes := make([][]byte, 0, len(messages))
+	// 分离高优先级和低优先级消息
+	highPriorityMessages := make([][]byte, 0)
+	lowPriorityMessages := make([][]byte, 0)
 	for _, msg := range messages {
 		// 序列化为JSON或其他格式
 		data, err := json.Marshal(msg)
@@ -429,10 +430,14 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 			log.Printf("Failed to marshal message: %v", err)
 			continue
 		}
-		messageBytes = append(messageBytes, data)
+		if msg.Priority == MessagePriorityHigh {
+			highPriorityMessages = append(highPriorityMessages, data)
+		} else {
+			lowPriorityMessages = append(lowPriorityMessages, data)
+		}
 	}
 
-	if len(messageBytes) == 0 {
+	if len(highPriorityMessages) == 0 && len(lowPriorityMessages) == 0 {
 		return
 	}
 
@@ -451,22 +456,32 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 			if !r.isViewerActive(v) {
 				return
 			}
-			// 发送消息到观众
-			r.sendMessagesToViewer(v, messageBytes)
+			// 发送高优先级消息
+			if len(highPriorityMessages) > 0 {
+				r.sendPriorityMessagesToViewer(v, highPriorityMessages, MessagePriorityHigh)
+			}
+
+			// 发送低优先级消息
+			if len(lowPriorityMessages) > 0 {
+				r.sendPriorityMessagesToViewer(v, lowPriorityMessages, MessagePriorityLow)
+			}
 		}(viewer)
 	}
 }
 
-// sendMessagesToViewer 发送消息到指定观众
-func (r *Room) sendMessagesToViewer(viewer *Viewer, messageBytes [][]byte) {
+// sendPriorityMessagesToViewer 发送优先级消息到指定观众
+func (r *Room) sendPriorityMessagesToViewer(viewer *Viewer, messageBytes [][]byte, priority MessagePriority) {
 	// 检查观众是否活跃
 	if !r.isViewerActive(viewer) {
 		return
 	}
 
-	// 尝试发送消息到观众的缓冲区
 	for _, msgBytes := range messageBytes {
-		r.trySendToViewerBuffer(viewer, msgBytes)
+		if priority == MessagePriorityHigh {
+			r.trySendHighPriorityToViewerBuffer(viewer, msgBytes)
+		} else {
+			r.trySendToViewerBuffer(viewer, msgBytes)
+		}
 	}
 }
 
@@ -477,8 +492,9 @@ func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
 
 	// 创建新消息
 	newItem := &item{
-		seq:  writePos,
-		data: message,
+		seq:      writePos,
+		data:     message,
+		priority: MessagePriorityLow,
 	}
 
 	// 直接覆盖（不检查是否满）
@@ -488,6 +504,28 @@ func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
 	viewer.hasMessage.Store(1) // 告诉用户有新消息
 
 	return true // 总是成功
+}
+
+// 尝试发送高优先级消息到观众的环形缓冲区（插队）
+func (r *Room) trySendHighPriorityToViewerBuffer(viewer *Viewer, message []byte) bool {
+	writePos := viewer.highPriorityWriteAt.Load()
+	nextWritePos := (writePos + 1) % int64(len(viewer.highPrioritySlots))
+
+	// 创建新消息
+	newItem := &item{
+		seq:      writePos,
+		data:     message,
+		priority: MessagePriorityHigh,
+	}
+
+	// 直接写入高优先级缓冲区
+	viewer.highPrioritySlots[writePos].Store(newItem)
+	viewer.highPriorityWriteAt.Store(nextWritePos)
+
+	// 设置高优先级消息标志
+	viewer.hasHighPriorityMsg.Store(1)
+
+	return true
 }
 
 // DataSource 数据源接口，用于发送和获取消息
@@ -513,7 +551,7 @@ func (r *Room) GetCapacity() uint32 {
 func (r *Room) isViewerActive(viewer *Viewer) bool {
 	// 检查观众是否已经取消
 	select {
-	case <-viewer.vctx.Done():
+	case <-viewer.viewerCtx.Done():
 		return false
 	default:
 	}
@@ -616,4 +654,39 @@ func (r *Room) RedisBytesRecv() int64 {
 		return r.dataSource.GetRedisBytesRecv(r.roomNumber)
 	}
 	return 0
+}
+
+// SendSystemMessage 发送系统消息（高优先级）
+func (r *Room) SendSystemMessage(msgType MessageType, data []byte) {
+	msg := &Message{
+		Type:     msgType,
+		Data:     data,
+		Time:     time.Now(),
+		Priority: MessagePriorityHigh, // 系统消息始终是高优先级
+	}
+
+	// 直接写入到消息环形缓冲区
+	r.writeToMessageRingBuffer(msg)
+
+	// 更新房间发送统计
+	r.messageSentCnt.Add(1)
+	r.bytesSentCnt.Add(int64(len(data)))
+}
+
+// SendUserMessage 发送用户消息（低优先级）
+func (r *Room) SendUserMessage(viewerID ViewerID, msgType MessageType, data []byte) {
+	msg := &Message{
+		ViewerID: viewerID,
+		Type:     msgType,
+		Data:     data,
+		Time:     time.Now(),
+		Priority: MessagePriorityLow, // 用户消息始终是低优先级
+	}
+
+	// 直接写入到消息环形缓冲区
+	r.writeToMessageRingBuffer(msg)
+
+	// 更新房间发送统计
+	r.messageSentCnt.Add(1)
+	r.bytesSentCnt.Add(int64(len(data)))
 }

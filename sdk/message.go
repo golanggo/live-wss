@@ -19,6 +19,13 @@ const (
 	MessageTypeError MessageType = "single"
 )
 
+type MessagePriority int
+
+const (
+	MessagePriorityLow  MessagePriority = iota // 低优先级
+	MessagePriorityHigh                        // 高优先级
+)
+
 // 压缩相关配置
 const (
 	// CompressionLevel 压缩级别（-2到9），-2表示最快压缩，9表示最高压缩率
@@ -27,10 +34,11 @@ const (
 
 // 全局消息池
 type Message struct {
-	ViewerID ViewerID    `json:"viewerID"`
-	Type     MessageType `json:"type"`
-	Data     []byte      `json:"data"`
-	Time     time.Time   `json:"timestamp"`
+	ViewerID ViewerID        `json:"viewerID"`
+	Type     MessageType     `json:"type"`
+	Data     []byte          `json:"data"`
+	Time     time.Time       `json:"timestamp"`
+	Priority MessagePriority `json:"priority"` // 添加优先级字段
 }
 
 // MessagePool 消息对象池，减少内存分配和GC压力

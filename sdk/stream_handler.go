@@ -189,7 +189,7 @@ func (h *StreamHandler) sendBatch(messages []*Message) {
 	}
 }
 
-// runReceiver - 从Redis接收消息
+// runReceiver - 从Redis Stream接收消息
 func (h *StreamHandler) runReceiver() {
 	// 获取服务器hostname作为组名和消费者名
 	hostname, err := os.Hostname()

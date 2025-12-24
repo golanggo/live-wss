@@ -34,12 +34,11 @@ type Viewer struct {
 	name     string     // 用户名称
 	userType ViewerType // 用户类型：观看者或主播
 
-	Room *Room // 所属房间
-
+	Room    *Room           // 所属房间
 	roomCtx context.Context // 根上下文，用于如果房间关闭，用户连接也会关闭
 
-	vctx       context.Context    // 观众上下文，用于取消操作
-	vctxCancel context.CancelFunc // 取消函数，用于取消操作
+	viewerCtx       context.Context    // 观众上下文，用于取消操作
+	viewerCtxCancel context.CancelFunc // 取消函数，用于取消操作
 
 	// 连接监控字段
 	mu sync.RWMutex // 保护所有需要同步的字段和通道
@@ -57,7 +56,14 @@ type Viewer struct {
 	roomBroadcastWriteAto atomic.Int64           // 下一条写位置（收集器只改它）
 	roomBroadcastReadAto  atomic.Int64           // 下一条读位置,发送到用户网络层（用户 goroutine 只改它）
 
-	hasMessage atomic.Int32 // 是否有消息待处理
+	// 高优先级消息缓冲区
+	highPrioritySlots   []atomic.Pointer[item] // 高优先级环形缓冲区
+	highPriorityWriteAt atomic.Int64           // 高优先级写入位置
+	highPriorityReadAt  atomic.Int64           // 高优先级读取位置
+
+	// 消息标志
+	hasMessage         atomic.Int32 // 是否有普通消息待处理
+	hasHighPriorityMsg atomic.Int32 // 是否有高优先级消息待处理
 
 	roomWriteBufSize atomic.Int64 // 接收缓冲区大小
 	roomWriteBufMu   sync.Mutex   // 保护接收缓冲区的调整
@@ -74,11 +80,15 @@ type Viewer struct {
 	// 字节数统计
 	sentBytesCnt     atomic.Int64 // 用户发送的字节数
 	receivedBytesCnt atomic.Int64 // 用户接收的字节数
+
+	// WebSocket写入专用锁，确保并发安全
+	wsWriteMu sync.Mutex
 }
 
 type item struct {
-	seq  int64  // 版本号，防止 ABA
-	data []byte // 真正消息，复用对象池可再省 30% CPU
+	seq      int64           // 版本号，防止 ABA
+	data     []byte          // 真正消息，复用对象池可再省 30% CPU
+	priority MessagePriority // 优先级
 }
 
 // NewViewer 创建新的观众连接
@@ -88,7 +98,8 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 
 	// 初始化动态大小的缓冲区
 	sendRoomSlots := make([]atomic.Pointer[item], baseRingBufferSize)
-	roomWriteSlots := make([]atomic.Pointer[item], baseRingBufferSize)
+	roomBroadcastSlots := make([]atomic.Pointer[item], baseRingBufferSize)
+	highPrioritySlots := make([]atomic.Pointer[item], baseRingBufferSize) // 高优先级缓冲区
 
 	return &Viewer{
 		vid:      vid,
@@ -99,15 +110,17 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 		lastActiveTime: now,
 		lastPingTime:   now,
 
-		roomCtx:    roomCtx,
-		vctx:       vctx,
-		vctxCancel: vctxCancel,
+		roomCtx:         roomCtx,
+		viewerCtx:       vctx,
+		viewerCtxCancel: vctxCancel,
 
 		// 初始化动态缓冲区
 		sendRoomSlots:      sendRoomSlots,
 		sendRoomBufSize:    atomic.Int64{},
-		roomBroadcastSlots: roomWriteSlots,
+		roomBroadcastSlots: roomBroadcastSlots,
 		roomWriteBufSize:   atomic.Int64{},
+		highPrioritySlots:  highPrioritySlots, // 添加高优先级缓冲区
+		hasHighPriorityMsg: atomic.Int32{},    // 初始化高优先级消息标志
 	}
 }
 
@@ -255,7 +268,7 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 
 	for {
 		select {
-		case <-v.vctx.Done():
+		case <-v.viewerCtx.Done():
 			// 上下文被取消，关闭连接
 			return
 		case <-v.roomCtx.Done():
@@ -363,15 +376,21 @@ func (v *Viewer) messageReader() {
 
 	for {
 		select {
-		case <-v.vctx.Done():
+		case <-v.viewerCtx.Done():
 			return // 观众退出
 		case <-v.roomCtx.Done():
 			return // 房间关闭
 		case <-ticker.C:
-			// 检查是否有待处理的消息
-			hasMessage := v.hasMessage.Load()
-			if hasMessage == 1 {
-				v.processBufferedMessages()
+			// 优先检查高优先级消息
+			hasHighPriorityMsg := v.hasHighPriorityMsg.Load()
+			if hasHighPriorityMsg == 1 {
+				v.processHighPriorityMessages()
+			}
+
+			// 检查普通消息
+			hasNormalMsg := v.hasMessage.Load()
+			if hasNormalMsg == 1 {
+				v.processNormalMessages()
 			}
 		}
 	}
@@ -379,6 +398,56 @@ func (v *Viewer) messageReader() {
 
 // 处理缓冲的消息
 func (v *Viewer) processBufferedMessages() {
+	// 优先处理高优先级消息
+	v.processHighPriorityMessages()
+
+	// 然后处理普通消息
+	v.processNormalMessages()
+}
+
+// 处理高优先级消息
+func (v *Viewer) processHighPriorityMessages() {
+	readPos := v.highPriorityReadAt.Load()
+	writePos := v.highPriorityWriteAt.Load()
+
+	// 如果没有高优先级消息，直接返回
+	if readPos == writePos {
+		v.hasHighPriorityMsg.Store(0)
+		return
+	}
+
+	// 读取所有待处理的高优先级消息
+	messages := make([][]byte, 0)
+	messageCount := int64(0)
+	for readPos != writePos {
+		itemPtr := v.highPrioritySlots[readPos].Load()
+		if itemPtr != nil {
+			messages = append(messages, itemPtr.data)
+			messageCount++
+			v.highPrioritySlots[readPos].Store(nil)
+		}
+		readPos = (readPos + 1) % int64(len(v.highPrioritySlots))
+	}
+
+	// 更新读位置
+	v.highPriorityReadAt.Store(readPos)
+
+	if len(messages) > 0 {
+		// 增加接收消息计数
+		v.receivedMessageCnt.Add(messageCount)
+
+		// 发送高优先级消息到WebSocket
+		v.sendMessagesToWebSocket(messages)
+
+		fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.name, len(messages))
+	}
+
+	// 重置高优先级消息标志
+	v.hasHighPriorityMsg.Store(0)
+}
+
+// 处理普通消息
+func (v *Viewer) processNormalMessages() {
 	readPos := v.roomBroadcastReadAto.Load()
 	writePos := v.roomBroadcastWriteAto.Load()
 
@@ -409,7 +478,7 @@ func (v *Viewer) processBufferedMessages() {
 		v.receivedMessageCnt.Add(int64(messageCount))
 
 		// 添加调试日志
-		fmt.Printf("观众 %s 处理了 %d 条消息，累计接收消息数: %d\n", v.name, len(messages), v.receivedMessageCnt.Load())
+		fmt.Printf("观众 %s 处理了 %d 条普通消息，累计接收消息数: %d\n", v.name, len(messages), v.receivedMessageCnt.Load())
 
 		// 通过WebSocket发送消息
 		v.sendMessagesToWebSocket(messages)
@@ -421,6 +490,10 @@ func (v *Viewer) processBufferedMessages() {
 
 // 通过WebSocket发送消息
 func (v *Viewer) sendMessagesToWebSocket(messages [][]byte) {
+	// 使用专用锁确保 WebSocket 写入串行化，解决并发安全问题
+	v.wsWriteMu.Lock()
+	defer v.wsWriteMu.Unlock()
+
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
@@ -465,7 +538,7 @@ func (v *Viewer) Ping(rate time.Duration) {
 				return
 			}
 			v.UpdateActiveTime()
-		case <-v.vctx.Done():
+		case <-v.viewerCtx.Done():
 			// 上下文被取消，关闭连接
 			return
 		case <-v.roomCtx.Done():
@@ -482,8 +555,8 @@ func (v *Viewer) Close() {
 	defer v.mu.Unlock()
 
 	// 取消上下文，触发 ReadMsgFromRoom 中的取消逻辑
-	if v.vctxCancel != nil {
-		v.vctxCancel()
+	if v.viewerCtxCancel != nil {
+		v.viewerCtxCancel()
 	}
 
 	// 关闭WebSocket连接
