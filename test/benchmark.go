@@ -3,14 +3,14 @@ package test
 import (
 	"context"
 	"fmt"
+	"live-wss/redis"
+	"live-wss/sdk"
 	"math/rand"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"live-wss/live"
 )
 
 // 压测配置
@@ -60,8 +60,8 @@ type BenchmarkResult struct {
 type Benchmark struct {
 	config  BenchmarkConfig
 	result  BenchmarkResult
-	room    *live.Room
-	viewers []*live.Viewer
+	room    *sdk.Room
+	viewers []*sdk.Viewer
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -79,7 +79,7 @@ type Benchmark struct {
 	latencies   []time.Duration
 	latenciesMu sync.Mutex
 	startTime   time.Time
-	dataSource  live.DataSource
+	dataSource  sdk.DataSource
 }
 
 // NewBenchmark 创建压测器
@@ -87,7 +87,7 @@ func NewBenchmark(config BenchmarkConfig) *Benchmark {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Benchmark{
 		config:    config,
-		viewers:   make([]*live.Viewer, 0, config.TotalViewers),
+		viewers:   make([]*sdk.Viewer, 0, config.TotalViewers),
 		ctx:       ctx,
 		cancel:    cancel,
 		latencies: make([]time.Duration, 0, config.TotalViewers*config.MessagePerViewer),
@@ -108,6 +108,8 @@ func (b *Benchmark) Run() *BenchmarkResult {
 	fmt.Println("----------------------------------------")
 
 	b.startTime = time.Now()
+
+	redis.InitRedis()
 
 	// 1. 初始化数据源
 	b.initDataSource()
@@ -140,33 +142,33 @@ func (b *Benchmark) initDataSource() {
 		panic("仅支持Redis数据源，请设置 UseRedis: true")
 	}
 	// 使用Redis数据源
-	redisStream := live.NewSimpleRedisStream()
-	redisStream.CreateStreamHandler(live.RoomNumber(b.config.RoomNumber), b.ctx)
-	b.dataSource = &RedisDataSourceAdapter{stream: redisStream, roomNumber: live.RoomNumber(b.config.RoomNumber)}
+	redisStream := sdk.NewRedisDataSource(redis.RDB)
+	redisStream.CreateStreamHandler(sdk.RoomNumber(b.config.RoomNumber), b.ctx)
+	b.dataSource = &RedisDataSourceAdapter{stream: redisStream, roomNumber: sdk.RoomNumber(b.config.RoomNumber)}
 	fmt.Println("  使用 Redis Stream 数据源")
 }
 
 // RedisDataSourceAdapter Redis数据源适配器
 type RedisDataSourceAdapter struct {
-	stream     *live.SimpleRedisStream
-	roomNumber live.RoomNumber
+	stream     *sdk.RedisDataSource
+	roomNumber sdk.RoomNumber
 }
 
-func (r *RedisDataSourceAdapter) SendMessage(ctx context.Context, roomNumber live.RoomNumber, msg *live.Message) error {
+func (r *RedisDataSourceAdapter) SendMessage(ctx context.Context, roomNumber sdk.RoomNumber, msg *sdk.Message) error {
 	return r.stream.SendMessage(ctx, roomNumber, msg)
 }
 
-func (r *RedisDataSourceAdapter) GetMessage(ctx context.Context, roomNumber live.RoomNumber) []*live.Message {
+func (r *RedisDataSourceAdapter) GetMessage(ctx context.Context, roomNumber sdk.RoomNumber) []*sdk.Message {
 	return r.stream.GetMessage(ctx, roomNumber)
 }
 
 // GetRedisBytesSent 获取发送到Redis的字节数
-func (r *RedisDataSourceAdapter) GetRedisBytesSent(roomNumber live.RoomNumber) int64 {
+func (r *RedisDataSourceAdapter) GetRedisBytesSent(roomNumber sdk.RoomNumber) int64 {
 	return r.stream.GetRedisBytesSent(roomNumber)
 }
 
 // GetRedisBytesRecv 获取从Redis接收的字节数
-func (r *RedisDataSourceAdapter) GetRedisBytesRecv(roomNumber live.RoomNumber) int64 {
+func (r *RedisDataSourceAdapter) GetRedisBytesRecv(roomNumber sdk.RoomNumber) int64 {
 	return r.stream.GetRedisBytesRecv(roomNumber)
 }
 
@@ -174,7 +176,7 @@ func (r *RedisDataSourceAdapter) GetRedisBytesRecv(roomNumber live.RoomNumber) i
 func (b *Benchmark) createRoom() {
 	fmt.Println("[2/6] 创建直播房间...")
 	var err error
-	b.room, err = live.NewRoom(b.ctx, b.config.RoomName, live.RoomNumber(b.config.RoomNumber), uint32(b.config.TotalViewers+1000))
+	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, sdk.RoomNumber(b.config.RoomNumber), uint32(b.config.TotalViewers+1000))
 	if err != nil {
 		panic(fmt.Sprintf("创建房间失败: %v", err))
 	}
@@ -220,10 +222,10 @@ func (b *Benchmark) createAndJoinViewers() {
 
 // createAndJoinViewer 创建单个观众并加入房间
 func (b *Benchmark) createAndJoinViewer(idx int) {
-	viewerID := live.ViewerID(fmt.Sprintf("viewer_%d", idx))
+	viewerID := sdk.ViewerID(fmt.Sprintf("viewer_%d", idx))
 	viewerName := fmt.Sprintf("观众%d", idx)
 
-	viewer := live.NewViewer(b.ctx, viewerID, viewerName, live.ViewerTypeViewer)
+	viewer := sdk.NewViewer(b.ctx, viewerID, viewerName, sdk.ViewerTypeViewer)
 
 	err := b.room.JoinRoom(viewer)
 	if err != nil {
@@ -256,7 +258,7 @@ func (b *Benchmark) runMessageBenchmark() {
 }
 
 // viewerSendMessages 观众发送消息
-func (b *Benchmark) viewerSendMessages(viewer *live.Viewer) {
+func (b *Benchmark) viewerSendMessages(viewer *sdk.Viewer) {
 	defer b.wg.Done()
 
 	for i := 0; i < b.config.MessagePerViewer; i++ {
@@ -546,7 +548,7 @@ func (b *Benchmark) PrintResult() {
 }
 
 // generateBenchmarkMessage 生成压测消息
-func generateBenchmarkMessage(viewerID live.ViewerID, seq int) []byte {
+func generateBenchmarkMessage(viewerID sdk.ViewerID, seq int) []byte {
 	messages := []string{
 		"主播好！",
 		"这个直播太精彩了！",

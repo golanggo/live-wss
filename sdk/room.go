@@ -1,4 +1,4 @@
-package live
+package sdk
 
 import (
 	"context"

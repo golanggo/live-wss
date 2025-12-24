@@ -1,4 +1,4 @@
-package live
+package sdk
 
 import (
 	"context"
@@ -13,30 +13,22 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const DataSourceRingBuffer = 8192
-
-// 简化的Redis Stream数据源
-type SimpleRedisStream struct {
-	client  *redis.ClusterClient
-	streams map[string]*StreamHandler // 房间号 -> Stream处理器
-}
-
 // Stream处理器
 type StreamHandler struct {
 	roomNumber RoomNumber
 	streamKey  string
-	client     *redis.ClusterClient // 添加client字段
+	rdbClient  *redis.ClusterClient // 添加client字段
 
 	// 使用环形缓冲区替代管道
-	messageRingBuf [DataSourceRingBuffer]*Message // 消息环形缓冲区
-	messageWriteAt atomic.Int64                   // 写入位置
-	messageReadAt  atomic.Int64                   // 读取位置
-	messageMu      sync.RWMutex                   // 保护环形缓冲区
+	messageRingBuf [RedisDataSourceRingBuffer]*Message // 消息环形缓冲区
+	messageWriteAt atomic.Int64                        // 写入位置
+	messageReadAt  atomic.Int64                        // 读取位置
+	messageMu      sync.RWMutex                        // 保护环形缓冲区
 
-	sendRingBuf [DataSourceRingBuffer]*Message // 发送环形缓冲区
-	sendWriteAt atomic.Int64                   // 发送写入位置
-	sendReadAt  atomic.Int64                   // 发送读取位置
-	sendMu      sync.RWMutex                   // 保护发送环形缓冲区
+	sendRingBuf [RedisDataSourceRingBuffer]*Message // 发送环形缓冲区
+	sendWriteAt atomic.Int64                        // 发送写入位置
+	sendReadAt  atomic.Int64                        // 发送读取位置
+	sendMu      sync.RWMutex                        // 保护发送环形缓冲区
 
 	// 用于向房间传递消息的通道
 	messageChan chan *Message
@@ -47,143 +39,6 @@ type StreamHandler struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
-}
-
-// 创建简单数据源
-// 创建新的SimpleRedisStream实例
-func NewSimpleRedisStream() *SimpleRedisStream {
-	fmt.Printf("NewSimpleRedisStream被调用\n") // 添加明显的日志
-	// 创建Redis集群客户端
-	client := redis.NewClusterClient(&redis.ClusterOptions{
-		// 配置Redis集群节点地址
-		Addrs: []string{
-			"18.139.180.76:7001", // Redis集群节点1
-			"18.139.180.76:7002", // Redis集群节点2
-			"18.139.180.76:7003", // Redis集群节点3
-		},
-		// 配置密码
-		Password: "root", // Redis密码
-		// 配置连接池
-		PoolSize:     500, // 增加连接池大小到500
-		MinIdleConns: 200, // 最小空闲连接200
-		MaxIdleConns: 300, // 最大空闲连接300
-		ClientName:   "wss_live",
-		// 4万人房间优化：增加并发连接处理能力
-
-		// 超时设置，增加超时时间以提高稳定性
-		DialTimeout:  15 * time.Second, // 增加拨号超时时间
-		ReadTimeout:  20 * time.Second, // 增加读取超时时间
-		WriteTimeout: 20 * time.Second, // 增加写入超时时间
-		// 优化重试机制
-		MaxRetries:      5,                      // 增加重试次数
-		MinRetryBackoff: 100 * time.Millisecond, // 增加最小重试间隔
-		MaxRetryBackoff: 500 * time.Millisecond, // 增加最大重试间隔
-		// 优化集群配置
-		MaxRedirects: 3,
-		// 连接池优化
-		ConnMaxIdleTime: 30 * time.Second, // 连接最大空闲时间
-		ConnMaxLifetime: 60 * time.Second, // 连接最大生命周期
-		PoolTimeout:     15 * time.Second, // 增加从连接池获取连接超时时间
-
-		// 禁用只读模式，减少不必要的连接
-		ReadOnly: false,
-		// 使用 Hash Tag 确保 Stream 和消费组在同一节点
-		RouteByLatency: true,
-		RouteRandomly:  false,
-	})
-
-	// 返回SimpleRedisStream实例
-	return &SimpleRedisStream{
-		client:  client,
-		streams: make(map[string]*StreamHandler),
-	}
-}
-
-// Client 获取Redis客户端（用于测试和诊断）
-func (s *SimpleRedisStream) Client() *redis.ClusterClient {
-	return s.client
-}
-
-// CreateStreamHandler - 为指定房间创建Stream处理器
-func (s *SimpleRedisStream) CreateStreamHandler(roomNumber RoomNumber, ctx context.Context) {
-	// 构造Stream键
-	streamKey := fmt.Sprintf("live:stream:%s", roomNumber)
-
-	// 创建Stream处理器
-	handler := &StreamHandler{
-		roomNumber:  roomNumber,
-		streamKey:   streamKey,
-		client:      s.client,                    // 设置client引用
-		messageChan: make(chan *Message, 100000), // 保留通道用于向房间传递消息
-	}
-	// 初始化原子计数器
-	handler.messageWriteAt.Store(0)
-	handler.messageReadAt.Store(0)
-	handler.sendWriteAt.Store(0)
-	handler.sendReadAt.Store(0)
-	// 创建上下文
-	handler.ctx, handler.cancel = context.WithCancel(ctx)
-
-	// 保存Stream处理器到映射表
-	s.streams[string(roomNumber)] = handler
-
-	// 启动发送协程
-	go func() {
-		fmt.Printf("runSender协程开始执行\n") // 添加日志
-		handler.runSender()
-	}()
-
-	// 启动接收协程
-	go func() {
-		fmt.Printf("runReceiver协程开始执行\n") // 添加日志
-		handler.runReceiver()
-	}()
-}
-
-// SendMessage - 发送消息到Stream
-func (s *SimpleRedisStream) SendMessage(ctx context.Context, roomNumber RoomNumber, msg *Message) error {
-	handler, ok := s.streams[string(roomNumber)]
-	if !ok {
-		return fmt.Errorf("stream handler not found for room %s", roomNumber)
-	}
-
-	// 使用环形缓冲区发送消息
-	return handler.sendToRingBuffer(msg)
-}
-
-// sendToRingBuffer - 发送消息到环形缓冲区
-func (h *StreamHandler) sendToRingBuffer(msg *Message) error {
-	h.sendMu.Lock()
-	defer h.sendMu.Unlock()
-
-	// 检查缓冲区是否已满
-	writePos := h.sendWriteAt.Load()
-	readPos := h.sendReadAt.Load()
-	bufferSize := int64(len(h.sendRingBuf))
-
-	if writePos-readPos >= bufferSize {
-		// 缓冲区满，丢弃最旧的消息以腾出空间
-		fmt.Printf("警告: Redis数据源房间 %s 的发送缓冲区已满，丢弃最旧消息\n", h.roomNumber)
-		h.sendReadAt.Store(readPos + 1)
-	}
-
-	// 写入消息到环形缓冲区
-	h.sendRingBuf[writePos%bufferSize] = msg
-	h.sendWriteAt.Store(writePos + 1)
-
-	fmt.Printf("Redis数据源成功将消息发送到房间 %s 的发送缓冲区\n", h.roomNumber)
-	return nil
-}
-
-// GetMessage - 从Stream获取消息
-func (s *SimpleRedisStream) GetMessage(ctx context.Context, roomNumber RoomNumber) []*Message {
-	handler, ok := s.streams[string(roomNumber)]
-	if !ok {
-		return nil
-	}
-
-	// 从环形缓冲区读取消息
-	return handler.readFromRingBuffer()
 }
 
 // readFromRingBuffer - 从环形缓冲区读取消息
@@ -294,7 +149,7 @@ func (h *StreamHandler) sendBatch(messages []*Message) {
 	defer cancel()
 	fmt.Printf("[DEBUG] sendBatch: 准备发送 %d 条消息到Redis，房间=%s\n", len(messages), h.roomNumber)
 
-	pipe := h.client.Pipeline()
+	pipe := h.rdbClient.Pipeline()
 
 	// 限制每次批量发送的消息数量为40条，避免单次发送过多消息导致超时
 	maxBatchSize := 40
@@ -348,7 +203,7 @@ func (h *StreamHandler) runReceiver() {
 
 	// 创建消费组（如果不存在）
 	ctx := context.Background()
-	err = h.client.XGroupCreateMkStream(ctx, h.streamKey, groupName, "0-0").Err()
+	err = h.rdbClient.XGroupCreateMkStream(ctx, h.streamKey, groupName, "0-0").Err()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") {
 			// 消费组创建失败，回退到普通读取模式
@@ -358,7 +213,7 @@ func (h *StreamHandler) runReceiver() {
 	}
 
 	// 先检查一下是否有消息
-	testResults, err := h.client.XLen(ctx, h.streamKey).Result()
+	testResults, err := h.rdbClient.XLen(ctx, h.streamKey).Result()
 	if err != nil {
 		fmt.Printf("[DEBUG] 检查Redis Stream长度失败: %v，房间=%s\n", err, h.roomNumber)
 	} else {
@@ -372,7 +227,7 @@ func (h *StreamHandler) runReceiver() {
 		default:
 			// 从消费组读取消息
 			ctx, cancel := context.WithTimeout(h.ctx, 2*time.Second)
-			results, err := h.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+			results, err := h.rdbClient.XReadGroup(ctx, &redis.XReadGroupArgs{
 				Group:    groupName,
 				Consumer: consumerName,
 				Streams:  []string{h.streamKey, ">"}, // 使用 ">" 读取未消费的消息
@@ -499,22 +354,4 @@ func (h *StreamHandler) getActualUserCount() int {
 	// 临时实现，可以根据房间号或其他信息估算用户数
 	// 这里我们简单返回一个默认值
 	return 10000
-}
-
-// GetRedisBytesSent 获取发送到Redis的字节数
-func (s *SimpleRedisStream) GetRedisBytesSent(roomNumber RoomNumber) int64 {
-	h, ok := s.streams[string(roomNumber)]
-	if !ok {
-		return 0
-	}
-	return h.redisBytesSent.Load()
-}
-
-// GetRedisBytesRecv 获取从Redis接收的字节数
-func (s *SimpleRedisStream) GetRedisBytesRecv(roomNumber RoomNumber) int64 {
-	h, ok := s.streams[string(roomNumber)]
-	if !ok {
-		return 0
-	}
-	return h.redisBytesRecv.Load()
 }
