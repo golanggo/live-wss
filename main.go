@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"live-wss/test"
+	"github.com/golanggo/live-wss/test"
 )
 
 func main() {

@@ -3,14 +3,15 @@ package test
 import (
 	"context"
 	"fmt"
-	"live-wss/redis"
-	"live-wss/sdk"
 	"math/rand"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/golanggo/live-wss/redis"
+	"github.com/golanggo/live-wss/sdk"
 )
 
 // 压测配置
