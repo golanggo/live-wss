@@ -594,3 +594,14 @@ func (r *Room) GetTotalViewerCount() uint32 {
 func (r *Room) IsOpen() bool {
 	return r.isOpenRoom.Load()
 }
+
+func (r *Room) PrintRoomInfo() {
+	fmt.Printf("房间 %s 信息:\n", r.roomNumber)
+	fmt.Printf("  房间名称: %s\n", r.roomName)
+	fmt.Printf("  最大容纳人数: %d\n", r.maxViewer)
+	fmt.Printf("  总观看人数: %d\n", r.totalViewer.Load())
+	fmt.Printf("  在线人数: %d\n", r.onlineViewer.Load())
+	fmt.Printf("  点赞数: %d\n", r.likeCount.Load())
+	fmt.Printf("  消息缓冲区中的消息数量: %d\n", r.ViewerSendRoomMessageCount())
+	fmt.Printf("  直播状态: %v\n", r.isOpenRoom.Load())
+}

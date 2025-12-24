@@ -363,20 +363,14 @@ func (v *Viewer) messageReader() {
 	for {
 		select {
 		case <-v.vctx.Done():
-			fmt.Printf("观众 %s 消息读取器退出（观众上下文取消）\n", v.name)
 			return // 观众退出
 		case <-v.roomCtx.Done():
-			fmt.Printf("观众 %s 消息读取器退出（房间上下文取消）\n", v.name)
 			return // 房间关闭
 		case <-ticker.C:
 			// 检查是否有待处理的消息
 			hasMessage := v.hasMessage.Load()
 			if hasMessage == 1 {
-				fmt.Printf("观众 %s 检测到有消息待处理\n", v.name)
 				v.processBufferedMessages()
-			} else {
-				// 添加调试日志
-				// fmt.Printf("观众 %s 暂无消息待处理\n", v.name)
 			}
 		}
 	}
@@ -392,9 +386,6 @@ func (v *Viewer) processBufferedMessages() {
 		v.hasMessage.Store(0)
 		return
 	}
-
-	// 添加调试日志
-	fmt.Printf("观众 %s 开始处理消息: readPos=%d, writePos=%d\n", v.name, readPos, writePos)
 
 	// 读取所有待处理的消息
 	messages := make([][]byte, 0)
@@ -541,4 +532,22 @@ func (v *Viewer) GetID() ViewerID {
 // WatchTime 获取观众在房间中的观看时间
 func (v *Viewer) WatchTime() time.Duration {
 	return v.lastActiveTime.Sub(v.startTime)
+}
+
+func (v *Viewer) GetLastPingTime() time.Time {
+	return v.lastPingTime
+}
+
+func (v *Viewer) GetStartTime() time.Time {
+	return v.startTime
+}
+func (v *Viewer) PrintViewerInfo() {
+	fmt.Printf("观众 %s 信息:\n", v.name)
+	fmt.Printf("  观众ID: %s\n", v.vid)
+	fmt.Printf("  加入时间: %s\n", v.startTime.Format(time.RFC3339))
+	fmt.Printf("  最后活跃时间: %s\n", v.lastActiveTime.Format(time.RFC3339))
+	fmt.Printf("  最后Ping时间: %s\n", v.lastPingTime.Format(time.RFC3339))
+	fmt.Printf("  发送消息数: %d\n", v.sentMessageCnt.Load())
+	fmt.Printf("  接收消息数: %d\n", v.receivedMessageCnt.Load())
+	fmt.Printf("  观看时间: %s\n", v.WatchTime().String())
 }
