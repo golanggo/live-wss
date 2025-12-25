@@ -226,7 +226,7 @@ func (b *Benchmark) createAndJoinViewer(idx int) {
 	viewerID := sdk.ViewerID(fmt.Sprintf("viewer_%d", idx))
 	viewerName := fmt.Sprintf("观众%d", idx)
 
-	viewer := sdk.NewViewer(b.ctx, viewerID, viewerName, sdk.ViewerTypeViewer)
+	viewer := sdk.NewViewer(b.ctx, viewerID, viewerName, sdk.ViewerTypeViewer, nil)
 
 	err := b.room.JoinRoom(viewer)
 	if err != nil {

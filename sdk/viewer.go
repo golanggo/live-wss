@@ -28,11 +28,63 @@ const (
 	bufferResizeThreshold = 80
 )
 
+// ViewerInfo 用户信息接口，用于扩展用户信息
+type ViewerInfo interface {
+	GetUserID() string
+	GetUserName() string
+	GetUserType() ViewerType
+	GetCustomInfo() map[string]any
+	GetConn() *websocket.Conn
+}
+
+// DefaultViewerInfo 默认用户信息实现
+type DefaultViewerInfo struct {
+	UserID     string          `json:"user_id"`
+	UserName   string          `json:"user_name"`
+	UserType   ViewerType      `json:"user_type"`
+	CustomInfo map[string]any  `json:"custom_info"`
+	Conn       *websocket.Conn `json:"conn"`
+}
+
+func (d *DefaultViewerInfo) GetUserID() string {
+	return d.UserID
+}
+
+func (d *DefaultViewerInfo) GetUserName() string {
+	return d.UserName
+}
+
+func (d *DefaultViewerInfo) GetUserType() ViewerType {
+	return d.UserType
+}
+
+func (d *DefaultViewerInfo) GetCustomInfo() map[string]any {
+	return d.CustomInfo
+}
+func (d *DefaultViewerInfo) GetConn() *websocket.Conn {
+	return d.Conn
+}
+
+// NewDefaultViewerInfo 创建默认用户信息
+func NewDefaultViewerInfo(userID, userName string, userType ViewerType, conn *websocket.Conn) *DefaultViewerInfo {
+	return &DefaultViewerInfo{
+		UserID:     userID,
+		UserName:   userName,
+		UserType:   userType,
+		CustomInfo: make(map[string]any),
+		Conn:       conn,
+	}
+}
+
 // Viewer 观众结构体
 type Viewer struct {
-	vid      ViewerID   // 用户唯一标识
-	name     string     // 用户名称
-	userType ViewerType // 用户类型：观看者或主播
+	vid      ViewerID        // 用户唯一标识
+	name     string          // 用户名称
+	userType ViewerType      // 用户类型：观看者或主播
+	Conn     *websocket.Conn // WebSocket连接
+
+	// 扩展用户信息
+	UserInfo ViewerInfo // 用户信息接口，允许自定义实现
 
 	Room    *Room           // 所属房间
 	roomCtx context.Context // 根上下文，用于如果房间关闭，用户连接也会关闭
@@ -68,8 +120,6 @@ type Viewer struct {
 	roomWriteBufSize atomic.Int64 // 接收缓冲区大小
 	roomWriteBufMu   sync.Mutex   // 保护接收缓冲区的调整
 
-	Conn *websocket.Conn // WebSocket连接
-
 	startTime      time.Time // 加入房间时间
 	lastActiveTime time.Time // 最后活跃时间
 	lastPingTime   time.Time // 最后Ping时间
@@ -83,6 +133,8 @@ type Viewer struct {
 
 	// WebSocket写入专用锁，确保并发安全
 	wsWriteMu sync.Mutex
+	// 扩展字段：允许外部项目添加自定义字段
+	CustomData map[string]any
 }
 
 type item struct {
@@ -91,8 +143,13 @@ type item struct {
 	priority MessagePriority // 优先级
 }
 
-// NewViewer 创建新的观众连接
-func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType ViewerType) *Viewer {
+// NewViewer 创建新的观众连接（使用默认用户信息）
+func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType ViewerType, conn *websocket.Conn) *Viewer {
+	return NewViewerWithInfo(roomCtx, vid, name, userType, conn, nil)
+}
+
+// NewViewerWithInfo 创建新的观众连接（支持自定义用户信息）
+func NewViewerWithInfo(roomCtx context.Context, vid ViewerID, name string, userType ViewerType, conn *websocket.Conn, userInfo ViewerInfo) *Viewer {
 	now := time.Now()
 	vctx, vctxCancel := context.WithCancel(roomCtx)
 
@@ -101,10 +158,16 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 	roomBroadcastSlots := make([]atomic.Pointer[item], baseRingBufferSize)
 	highPrioritySlots := make([]atomic.Pointer[item], baseRingBufferSize) // 高优先级缓冲区
 
+	// 如果没有提供用户信息，使用默认实现
+	if userInfo == nil {
+		userInfo = NewDefaultViewerInfo(string(vid), name, userType, conn)
+	}
+
 	return &Viewer{
 		vid:      vid,
 		name:     name,
 		userType: userType,
+		UserInfo: userInfo,
 
 		startTime:      now,
 		lastActiveTime: now,
@@ -121,7 +184,45 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 		roomWriteBufSize:   atomic.Int64{},
 		highPrioritySlots:  highPrioritySlots, // 添加高优先级缓冲区
 		hasHighPriorityMsg: atomic.Int32{},    // 初始化高优先级消息标志
+
+		// 初始化自定义数据
+		CustomData: make(map[string]any),
 	}
+}
+
+// SetCustomData 设置自定义数据
+func (v *Viewer) SetCustomData(key string, value any) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.CustomData == nil {
+		v.CustomData = make(map[string]any)
+	}
+	v.CustomData[key] = value
+}
+
+// GetCustomData 获取自定义数据
+func (v *Viewer) GetCustomData(key string) (any, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.CustomData == nil {
+		return nil, false
+	}
+	value, exists := v.CustomData[key]
+	return value, exists
+}
+
+// SetUserInfo 设置用户信息
+func (v *Viewer) SetUserInfo(userInfo ViewerInfo) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.UserInfo = userInfo
+}
+
+// GetUserInfo 获取用户信息
+func (v *Viewer) GetUserInfo() ViewerInfo {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.UserInfo
 }
 
 func (v *Viewer) Start() {
@@ -394,15 +495,6 @@ func (v *Viewer) messageReader() {
 			}
 		}
 	}
-}
-
-// 处理缓冲的消息
-func (v *Viewer) processBufferedMessages() {
-	// 优先处理高优先级消息
-	v.processHighPriorityMessages()
-
-	// 然后处理普通消息
-	v.processNormalMessages()
 }
 
 // 处理高优先级消息
