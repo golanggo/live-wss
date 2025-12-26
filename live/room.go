@@ -163,6 +163,9 @@ func (r *Room) Start(dataSource DataSource) {
 	// 房间->观众网络
 	go r.broadcastHandler()
 
+	// 定时打印房间信息
+	go r.PrintRoomInfo()
+
 	fmt.Printf("%s 房间已经启动\n", r.roomNumber)
 }
 
@@ -200,8 +203,6 @@ func (r *Room) JoinRoom(viewer *Viewer) error {
 	r.onlineViewer.Add(1)
 	r.totalViewer.Add(1)
 
-	// 增强日志：记录用户加入房间
-	fmt.Printf("room=%s %s 加入房间。\n", r.roomNumber, viewer.name)
 	return nil
 }
 
@@ -307,8 +308,6 @@ func (r *Room) processBatch(batch *[]*Message) {
 		if viewer.sendRoomHasMessage.Load() == 1 {
 			rawMessages := viewer.CollectMessages()
 			for _, data := range rawMessages {
-				// 添加日志：打印用户发送的消息
-				fmt.Printf("[消息] room=%s viewer=%s: %s\n", r.roomNumber, viewer.name, string(data))
 				*batch = append(*batch, &Message{
 					ViewerID: viewerID,
 					Data:     data,
@@ -331,14 +330,12 @@ func (r *Room) processBatch(batch *[]*Message) {
 
 // messageToDataSource 每100ms检查一次 ring buffer，将消息发送到数据源
 func (r *Room) messageToDataSource() {
-	fmt.Printf("房间 %s messageToDataSource 协程开始运行\n", r.roomNumber)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-r.roomCtx.Done():
-			fmt.Printf("房间 %s messageToDataSource 协程退出（房间上下文取消）\n", r.roomNumber)
 			return // 房间关闭ok退出
 		case <-ticker.C:
 			// 从 ring buffer 读取消息并发送到数据源
@@ -640,14 +637,19 @@ func (r *Room) IsOpen() bool {
 }
 
 func (r *Room) PrintRoomInfo() {
-	fmt.Printf("房间 %s 信息:\n", r.roomNumber)
-	fmt.Printf("  房间名称: %s\n", r.roomName)
-	fmt.Printf("  最大容纳人数: %d\n", r.maxViewer)
-	fmt.Printf("  总观看人数: %d\n", r.totalViewer.Load())
-	fmt.Printf("  在线人数: %d\n", r.onlineViewer.Load())
-	fmt.Printf("  点赞数: %d\n", r.likeCount.Load())
-	fmt.Printf("  消息缓冲区中的消息数量: %d\n", r.ViewerSendRoomMessageCount())
-	fmt.Printf("  直播状态: %v\n", r.isOpenRoom.Load())
+	ticker := time.NewTicker(8 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		fmt.Printf("房间 %s 信息:\n", r.roomNumber)
+		fmt.Printf("  房间名称: %s\n", r.roomName)
+		fmt.Printf("  最大容纳人数: %d\n", r.maxViewer)
+		fmt.Printf("  总观看人数: %d\n", r.totalViewer.Load())
+		fmt.Printf("  在线人数: %d\n", r.onlineViewer.Load())
+		fmt.Printf("  点赞数: %d\n", r.likeCount.Load())
+		fmt.Printf("  消息缓冲区中的消息数量: %d\n", r.ViewerSendRoomMessageCount())
+		fmt.Printf("  直播状态: %v\n", r.isOpenRoom.Load())
+	}
 }
 
 // BytesSent 获取房间发送的总字节数

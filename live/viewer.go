@@ -147,7 +147,9 @@ func (v *Viewer) Start() {
 	//定时发送Ping消息，检测连接是否断开
 	go v.Ping(30 * time.Second)
 
-	fmt.Printf("%s 加入房间\n", v.name)
+	// 定时打印观众信息
+	go v.PrintViewerInfo()
+
 }
 
 // StartMessageReader 启动消息读取器（用于压测，不启动WebSocket相关协程）
@@ -433,9 +435,6 @@ func (v *Viewer) processBufferedMessages() {
 		// 增加接收消息计数（无论是否有WebSocket连接都计数）
 		v.receivedMessageCnt.Add(int64(messageCount))
 
-		// 添加调试日志
-		fmt.Printf("观众 %s 处理了 %d 条消息，累计接收消息数: %d\n", v.name, len(messages), v.receivedMessageCnt.Load())
-
 		// 通过WebSocket发送消息
 		v.sendMessagesToWebSocket(messages)
 	}
@@ -515,8 +514,6 @@ func (v *Viewer) Close() {
 	if v.Conn != nil {
 		v.Conn.Close()
 	}
-
-	fmt.Printf("%s 离开房间 closed\n", v.name)
 }
 
 // UpdateActiveTime 更新最后活跃时间
@@ -580,12 +577,17 @@ func (v *Viewer) GetStartTime() time.Time {
 	return v.startTime
 }
 func (v *Viewer) PrintViewerInfo() {
-	fmt.Printf("观众 %s 信息:\n", v.name)
-	fmt.Printf("  观众ID: %s\n", v.vid)
-	fmt.Printf("  加入时间: %s\n", v.startTime.Format(time.RFC3339))
-	fmt.Printf("  最后活跃时间: %s\n", v.lastActiveTime.Format(time.RFC3339))
-	fmt.Printf("  最后Ping时间: %s\n", v.lastPingTime.Format(time.RFC3339))
-	fmt.Printf("  发送消息数: %d\n", v.sentMessageCnt.Load())
-	fmt.Printf("  接收消息数: %d\n", v.receivedMessageCnt.Load())
-	fmt.Printf("  观看时间: %s\n", v.WatchTime().String())
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		fmt.Printf("观众 %s 信息:\n", v.name)
+		fmt.Printf("  观众ID: %s\n", v.vid)
+		fmt.Printf("  加入时间: %s\n", v.startTime.Format(time.RFC3339))
+		fmt.Printf("  最后活跃时间: %s\n", v.lastActiveTime.Format(time.RFC3339))
+		fmt.Printf("  最后Ping时间: %s\n", v.lastPingTime.Format(time.RFC3339))
+		fmt.Printf("  发送消息数: %d\n", v.sentMessageCnt.Load())
+		fmt.Printf("  接收消息数: %d\n", v.receivedMessageCnt.Load())
+		fmt.Printf("  观看时间: %s\n", v.WatchTime().String())
+	}
 }
