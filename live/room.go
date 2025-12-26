@@ -49,8 +49,6 @@ type Room struct {
 	// 消息和字节数统计
 	messageSentCnt     atomic.Int64 // 房间发送的消息数
 	messageReceivedCnt atomic.Int64 // 房间接收的消息数
-	bytesSentCnt       atomic.Int64 // 房间发送的字节数
-	bytesReceivedCnt   atomic.Int64 // 房间接收的字节数
 
 	viewers   map[ViewerID]*Viewer // 观众列表（如果需要跟踪具体观众）
 	viewerMux sync.RWMutex         // 保护 viewerList 的互斥锁
@@ -111,7 +109,6 @@ func (r *Room) sendBatch(messages []*Message) {
 		r.writeToMessageRingBuffer(msg)
 		// 更新房间发送统计
 		r.messageSentCnt.Add(1)
-		r.bytesSentCnt.Add(int64(len(msg.Data)))
 	}
 }
 
@@ -239,10 +236,11 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 }
 
 // 房间消息收集器
+// 1. 快速处理唤醒的观众
+// 2. 定期批量处理所有观众的消息
 func (r *Room) MessageCollector() {
 
-	// 使用select的default实现非阻塞处理
-	ticker := time.NewTicker(5 * time.Millisecond)
+	ticker := time.NewTicker(8 * time.Second)
 	defer ticker.Stop()
 
 	messageBatch := make([]*Message, 0, 5000)
@@ -281,7 +279,6 @@ func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*Message) {
 		})
 		// 更新房间接收统计
 		r.messageReceivedCnt.Add(1)
-		r.bytesReceivedCnt.Add(int64(len(data)))
 	}
 
 	// 批次达到一定大小就发送，避免频繁发送
@@ -315,7 +312,6 @@ func (r *Room) processBatch(batch *[]*Message) {
 				})
 				// 更新房间接收统计
 				r.messageReceivedCnt.Add(1)
-				r.bytesReceivedCnt.Add(int64(len(data)))
 			}
 			count++
 		}
@@ -650,16 +646,6 @@ func (r *Room) PrintRoomInfo() {
 		fmt.Printf("  消息缓冲区中的消息数量: %d\n", r.ViewerSendRoomMessageCount())
 		fmt.Printf("  直播状态: %v\n", r.isOpenRoom.Load())
 	}
-}
-
-// BytesSent 获取房间发送的总字节数
-func (r *Room) BytesSent() int64 {
-	return r.bytesSentCnt.Load()
-}
-
-// BytesReceived 获取房间接收的总字节数
-func (r *Room) BytesReceived() int64 {
-	return r.bytesReceivedCnt.Load()
 }
 
 // RedisBytesSent 获取房间发送到Redis的字节数

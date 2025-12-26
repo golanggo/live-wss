@@ -91,9 +91,6 @@ type Viewer struct {
 	// 消息计数
 	sentMessageCnt     atomic.Int64 // 用户发送的消息数
 	receivedMessageCnt atomic.Int64 // 用户接收的消息数
-	// 字节数统计
-	sentBytesCnt     atomic.Int64 // 用户发送的字节数
-	receivedBytesCnt atomic.Int64 // 用户接收的字节数
 
 	filterTool *FilterTool // 过滤工具
 }
@@ -208,8 +205,6 @@ func (v *Viewer) Write(b []byte) {
 
 	// 增加发送消息计数
 	v.sentMessageCnt.Add(1)
-	// 增加发送字节数统计
-	v.sentBytesCnt.Add(int64(len(buf)))
 
 	// 只有当hasMessage为0时，才唤醒读取消息协程
 	// 等下次一次写入消息时，再唤醒读取消息协程
@@ -326,58 +321,40 @@ func (v *Viewer) CollectMessages() [][]byte {
 		return nil
 	}
 
-	// 获取当前缓冲区大小
+	// 使用CAS原子更新读取位置
+	newRead := read + available
+	if v.sendRoomReadAto.CompareAndSwap(read, newRead) {
+		// 成功获取所有权，开始收集
+		return v.collectRange(read, newRead)
+	}
+	return [][]byte{}
+}
+
+func (v *Viewer) collectRange(start, end int64) [][]byte {
+	messages := make([][]byte, 0, end-start)
 	bufSize := v.getSendRoomBufSize()
-	if bufSize == 0 {
-		// 初始化缓冲区大小
-		v.sendRoomBufSize.Store(int64(len(v.sendRoomSlots)))
-		bufSize = v.getSendRoomBufSize()
-	}
 
-	// 限制最大收集数量，避免饥饿其他观众
-	if available > bufSize-1 {
-		available = bufSize - 1
-	}
+	for seq := start; seq < end; seq++ {
+		slot := &v.sendRoomSlots[seq%bufSize]
 
-	// 3. 预分配结果切片
-	messages := make([][]byte, 0, available)
-	collected := int64(0)
-
-	// 4. 遍历收集
-	for i := int64(0); i < available; i++ {
-
-		//获取读取数据的位置
-		slot := &v.sendRoomSlots[(read+i)%bufSize]
-
-		// 快速检查
+		// 尝试获取并清空slot
 		item := slot.Load()
 		if item == nil {
-			// 槽位为空，可能是被其他goroutine清理了
-			break
-		}
-
-		expectedSeq := read + i + 1
-		if item.seq == expectedSeq {
-			// 版本匹配，收集消息
-			messages = append(messages, item.data)
-			slot.Store(nil) // 清空槽位
-			collected++
-		} else if item.seq < expectedSeq {
-			slot.Store(nil)
-			// 旧消息，跳过
 			continue
-		} else {
-			// 消息尚未准备好，跳过本次
-			break
 		}
+
+		if item.seq == seq+1 {
+			messages = append(messages, item.data)
+		}
+
+		// 强制清空slot，无论seq是否匹配
+		slot.Store(nil)
 	}
 
-	// 如果有收集到消息，增加对应统计数据
-	if collected > 0 {
-		v.sendRoomReadAto.Add(collected)
-		v.sentMessageCnt.Add(collected)
-		v.sendRoomHasMessage.Store(0)
-	}
+	// 更新统计
+	collected := int64(len(messages))
+	v.sentMessageCnt.Add(collected)
+	v.sendRoomHasMessage.Store(0)
 
 	return messages
 }
@@ -462,8 +439,6 @@ func (v *Viewer) sendMessagesToWebSocket(messages [][]byte) {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
 			return
 		}
-		// 增加接收字节数统计
-		v.receivedBytesCnt.Add(int64(len(msg)))
 		// 更新最后活跃时间
 		v.lastActiveTime = time.Now()
 	}
@@ -542,16 +517,6 @@ func (v *Viewer) SentMessages() int64 {
 // ReceivedMessages 获取用户接收的消息数
 func (v *Viewer) ReceivedMessages() int64 {
 	return v.receivedMessageCnt.Load()
-}
-
-// SentBytes 获取用户发送的字节数
-func (v *Viewer) SentBytes() int64 {
-	return v.sentBytesCnt.Load()
-}
-
-// ReceivedBytes 获取用户接收的字节数
-func (v *Viewer) ReceivedBytes() int64 {
-	return v.receivedBytesCnt.Load()
 }
 
 // 获取观众名称

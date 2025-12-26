@@ -13,7 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const DataSourceRingBuffer = 8192
+const DataSourceRingBuffer = 81920
 
 // 简化的Redis Stream数据源
 type SimpleRedisStream struct {
