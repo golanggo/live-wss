@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -12,7 +13,7 @@ const RedisDataSourceRingBuffer = 8192
 // 简化的Redis Stream数据源
 type RedisDataSource struct {
 	rdbClient *redis.ClusterClient
-	streams   map[string]*StreamHandler // 房间号 -> Stream处理器
+	streams   map[string]*StreamHandler // StreamKey -> Stream处理器
 }
 
 // 创建简单数据源
@@ -32,16 +33,13 @@ func (s *RedisDataSource) Client() *redis.ClusterClient {
 }
 
 // CreateStreamHandler - 为指定房间创建Stream处理器
-func (s *RedisDataSource) CreateStreamHandler(roomNumber RoomNumber, ctx context.Context) {
-	// 构造Stream键
-	streamKey := fmt.Sprintf("live:stream:%s", roomNumber)
-
+func (s *RedisDataSource) CreateStreamHandler(ctx context.Context, roomNumber RoomNumber, streamKey string) {
 	// 创建Stream处理器
 	handler := &StreamHandler{
 		roomNumber:  roomNumber,
 		streamKey:   streamKey,
-		rdbClient:   s.rdbClient,                 // 设置client引用
-		messageChan: make(chan *Message, 100000), // 保留通道用于向房间传递消息
+		rdbClient:   s.rdbClient,                   // 设置client引用
+		messageChan: make(chan *MessagePb, 100000), // 保留通道用于向房间传递消息
 	}
 	// 初始化原子计数器
 	handler.messageWriteAt.Store(0)
@@ -52,15 +50,15 @@ func (s *RedisDataSource) CreateStreamHandler(roomNumber RoomNumber, ctx context
 	handler.ctx, handler.cancel = context.WithCancel(ctx)
 
 	// 保存Stream处理器到映射表
-	s.streams[string(roomNumber)] = handler
+	s.streams[streamKey] = handler
 
-	// 启动发送协程
+	// 启动发送协程,发送消息到Redis Stream
 	go func() {
 		fmt.Printf("runSender协程开始执行\n") // 添加日志
 		handler.runSender()
 	}()
 
-	// 启动接收协程
+	// 启动接收协程,从Redis Stream接收消息
 	go func() {
 		fmt.Printf("runReceiver协程开始执行\n") // 添加日志
 		handler.runReceiver()
@@ -68,43 +66,19 @@ func (s *RedisDataSource) CreateStreamHandler(roomNumber RoomNumber, ctx context
 }
 
 // SendMessage - 发送消息到Stream
-func (s *RedisDataSource) SendMessage(ctx context.Context, roomNumber RoomNumber, msg *Message) error {
-	handler, ok := s.streams[string(roomNumber)]
+func (s *RedisDataSource) SendMessage(ctx context.Context, steamKey string, msg *MessagePb) error {
+	handler, ok := s.streams[steamKey]
 	if !ok {
-		return fmt.Errorf("stream handler not found for room %s", roomNumber)
+		return fmt.Errorf("stream handler not found for stream key %s", steamKey)
 	}
 
 	// 使用环形缓冲区发送消息
 	return handler.sendToRingBuffer(msg)
 }
 
-// sendToRingBuffer - 发送消息到环形缓冲区
-func (h *StreamHandler) sendToRingBuffer(msg *Message) error {
-	h.sendMu.Lock()
-	defer h.sendMu.Unlock()
-
-	// 检查缓冲区是否已满
-	writePos := h.sendWriteAt.Load()
-	readPos := h.sendReadAt.Load()
-	bufferSize := int64(len(h.sendRingBuf))
-
-	if writePos-readPos >= bufferSize {
-		// 缓冲区满，丢弃最旧的消息以腾出空间
-		fmt.Printf("警告: Redis数据源房间 %s 的发送缓冲区已满，丢弃最旧消息\n", h.roomNumber)
-		h.sendReadAt.Store(readPos + 1)
-	}
-
-	// 写入消息到环形缓冲区
-	h.sendRingBuf[writePos%bufferSize] = msg
-	h.sendWriteAt.Store(writePos + 1)
-
-	fmt.Printf("Redis数据源成功将消息发送到房间 %s 的发送缓冲区\n", h.roomNumber)
-	return nil
-}
-
 // GetMessage - 从Stream获取消息
-func (s *RedisDataSource) GetMessage(ctx context.Context, roomNumber RoomNumber) []*Message {
-	handler, ok := s.streams[string(roomNumber)]
+func (s *RedisDataSource) GetMessage(ctx context.Context, streamKey string) []*MessagePb {
+	handler, ok := s.streams[streamKey]
 	if !ok {
 		return nil
 	}
@@ -114,8 +88,8 @@ func (s *RedisDataSource) GetMessage(ctx context.Context, roomNumber RoomNumber)
 }
 
 // GetRedisBytesSent 获取发送到Redis的字节数
-func (s *RedisDataSource) GetRedisBytesSent(roomNumber RoomNumber) int64 {
-	h, ok := s.streams[string(roomNumber)]
+func (s *RedisDataSource) GetRedisBytesSent(streamKey string) int64 {
+	h, ok := s.streams[streamKey]
 	if !ok {
 		return 0
 	}
@@ -123,10 +97,20 @@ func (s *RedisDataSource) GetRedisBytesSent(roomNumber RoomNumber) int64 {
 }
 
 // GetRedisBytesRecv 获取从Redis接收的字节数
-func (s *RedisDataSource) GetRedisBytesRecv(roomNumber RoomNumber) int64 {
-	h, ok := s.streams[string(roomNumber)]
+func (s *RedisDataSource) GetRedisBytesRecv(streamKey string) int64 {
+	h, ok := s.streams[streamKey]
 	if !ok {
 		return 0
 	}
 	return h.redisBytesRecv.Load()
+}
+
+// Store 存储键值对到Redis
+func (s *RedisDataSource) Store(ctx context.Context, key string, value any, duration time.Duration) error {
+	return s.rdbClient.Set(ctx, key, value, duration).Err()
+}
+
+// Get 从Redis获取值
+func (s *RedisDataSource) Get(ctx context.Context, key string) (any, error) {
+	return s.rdbClient.Get(ctx, key).Result()
 }

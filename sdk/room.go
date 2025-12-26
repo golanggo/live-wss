@@ -2,35 +2,17 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
-)
 
-// RoomNumber 已在外部定义，此处移除重复声明
-
-// 连接监控和清理配置常量
-const (
-
-	// MaxPingInterval 最大Ping间隔（秒）
-	MaxPingInterval = 30
-	// MessageRingBufferSize 消息环形缓冲区大小，用于存储待发送到数据源的消息
-	MessageRingBufferSize = 65536
-)
-
-var (
-	ErrRoomNoLiving = errors.New("直播已经结束")
-	ErrRoomIsFull   = errors.New("房间已满")
-
-	ErrNewRoomName   = errors.New("新房间名称不能为空")
-	ErrNewRoomNumber = errors.New("新房间号不能为空")
+	"google.golang.org/protobuf/proto"
 )
 
 type Room struct {
+	firmUUID   FirmUUID
 	roomNumber RoomNumber
 	roomName   string
 
@@ -55,10 +37,10 @@ type Room struct {
 	viewerMux sync.RWMutex         // 保护 viewerList 的互斥锁
 
 	// 使用 ring buffer 替换通道，避免通道满山丢失消息
-	viewerSendRoomMessageBuf [MessageRingBufferSize]*Message // 环形缓冲区
-	viewerSendWritePos       atomic.Int64                    // 写入位置
-	viewerSendReadPos        atomic.Int64                    // 读取位置
-	viewerSendMu             sync.RWMutex                    // 保护缓冲区
+	viewerSendRoomMessageBuf [MessageRingBufferSize]*MessagePb // 环形缓冲区
+	viewerSendWritePos       atomic.Int64                      // 写入位置
+	viewerSendReadPos        atomic.Int64                      // 读取位置
+	viewerSendMu             sync.RWMutex                      // 保护缓冲区
 
 	viewerWake chan ViewerID // 用户从网络层获取消息后，将用户ID发送到该通道，用于唤醒读取消息协程
 
@@ -69,7 +51,7 @@ type Room struct {
 	dataSource DataSource
 }
 
-func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMax uint32) (*Room, error) {
+func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMax uint32, firmUUID FirmUUID) (*Room, error) {
 	if rootName == "" {
 		return nil, ErrNewRoomName
 	}
@@ -78,11 +60,16 @@ func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMa
 		return nil, ErrNewRoomNumber
 	}
 
+	if firmUUID == "" {
+		return nil, ErrNewRoomFirmUUID
+	}
+
 	// 创建context，用于传递给其他goroutine
 	roomCtx, cancelFunc := context.WithCancel(ctx)
 
 	// 创建房间
 	room := &Room{
+		firmUUID:   firmUUID,
 		roomNumber: roomNumber,
 		roomName:   rootName,
 		maxViewer:  roomMax,
@@ -101,9 +88,9 @@ func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMa
 	return room, nil
 }
 
-func (r *Room) sendBatch(messages []*Message) {
+func (r *Room) sendBatch(messages []*MessagePb) {
 	for _, msg := range messages {
-		if msg == nil || msg.Data == nil {
+		if msg == nil || msg.Data == "" {
 			continue
 		}
 		// 写入到 ring buffer
@@ -115,7 +102,7 @@ func (r *Room) sendBatch(messages []*Message) {
 }
 
 // writeToMessageRingBuffer 写入消息到 ring buffer
-func (r *Room) writeToMessageRingBuffer(msg *Message) {
+func (r *Room) writeToMessageRingBuffer(msg *MessagePb) {
 	r.viewerSendMu.Lock()
 	defer r.viewerSendMu.Unlock()
 
@@ -133,9 +120,8 @@ func (r *Room) writeToMessageRingBuffer(msg *Message) {
 		r.viewerSendReadPos.Store(newReadPos)
 	}
 
-	// 组件规一、维护 ring buffer的一程目标、持一个序列号且制造新消息提验查是否需需需需需需
-	// 缓冲区不禹存羊设思想
-	bufferMsg := *msg // 复制消息，不直接引用
+	// 组件规一、维护 ring buffer的一程目标、持一个序列号且制造新消息提验查是否需要
+	bufferMsg := *msg
 	r.viewerSendRoomMessageBuf[writePos] = &bufferMsg
 
 	// 更新写入位置
@@ -162,7 +148,48 @@ func (r *Room) Start(dataSource DataSource) {
 	// 房间->观众网络
 	go r.broadcastHandler()
 
+	// 房间->数据源
+	go r.storeViewerDurationToDataSource()
+
 	fmt.Printf("%s 房间已经启动\n", r.roomNumber)
+}
+
+// 存储用户时长到Redis的协程
+func (r *Room) storeViewerDurationToDataSource() {
+	fmt.Printf("房间 %s storeViewerDurationToDataSource 协程开始运行\n", r.roomNumber)
+	ticker := time.NewTicker(12 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.roomCtx.Done():
+			fmt.Printf("房间 %s storeViewerDurationToDataSource 协程退出（房间上下文取消）\n", r.roomNumber)
+			return // 房间关闭ok退出
+		case <-ticker.C:
+			r.storeViewerDurationsToRedis()
+		}
+	}
+}
+
+// 将用户时长存储到Redis
+func (r *Room) storeViewerDurationsToRedis() {
+	r.viewerMux.RLock()
+	defer r.viewerMux.RUnlock()
+
+	for viewerID, viewer := range r.viewers {
+		// 计算时长键
+		key := fmt.Sprintf(Live_WatchDuration, r.firmUUID, r.roomNumber, viewerID)
+		totalDuration := viewer.GetTotalWatchTime()
+
+		// 存储到Redis
+		if r.dataSource != nil {
+			err := r.dataSource.Store(r.roomCtx, key, totalDuration, 36*time.Hour)
+			if err != nil {
+				fmt.Printf("存储用户时长到Redis失败: %v, 用户: %s, 房间: %s\n", err, viewerID, r.roomNumber)
+			} else {
+				fmt.Printf("存储用户时长: %s, 时长: %d秒\n", key, totalDuration)
+			}
+		}
+	}
 }
 
 func (r *Room) Close() {
@@ -243,7 +270,7 @@ func (r *Room) MessageCollector() {
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 
-	messageBatch := make([]*Message, 0, 5000)
+	messageBatch := make([]*MessagePb, 0, 5000)
 
 	for {
 		select {
@@ -261,7 +288,7 @@ func (r *Room) MessageCollector() {
 }
 
 // 收集处理单个观众的消息
-func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*Message) {
+func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*MessagePb) {
 	r.viewerMux.RLock()
 	viewer, exists := r.viewers[viewerID]
 	r.viewerMux.RUnlock()
@@ -272,11 +299,20 @@ func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*Message) {
 
 	rawMessages := viewer.CollectMessages()
 	for _, data := range rawMessages {
-		*batch = append(*batch, &Message{
-			ViewerID: viewerID,
-			Data:     data,
-			Time:     time.Now(),
-		})
+		var messagePb MessagePb
+		err := proto.Unmarshal(data, &messagePb)
+		if err != nil {
+			fmt.Printf("[错误] 收集处理单个观众的消息时发生错误: %v\n", err)
+			continue
+		}
+		messagePb.LiveId = string(r.roomNumber)
+		messagePb.SendClient = &SendClientInfoPb{
+			UserId:   string(viewer.GetID()),
+			NickName: viewer.GetName(),
+		}
+		messagePb.Priority = MessagePriority_LOW
+		messagePb.Timestamp = time.Now().UnixMilli()
+		*batch = append(*batch, &messagePb)
 		// 更新房间接收统计
 		r.messageReceivedCnt.Add(1)
 		r.bytesReceivedCnt.Add(int64(len(data)))
@@ -290,7 +326,7 @@ func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*Message) {
 }
 
 // 批量处理收集到的消息
-func (r *Room) processBatch(batch *[]*Message) {
+func (r *Room) processBatch(batch *[]*MessagePb) {
 	r.viewerMux.RLock()
 	defer r.viewerMux.RUnlock()
 
@@ -308,11 +344,20 @@ func (r *Room) processBatch(batch *[]*Message) {
 			for _, data := range rawMessages {
 				// 添加日志：打印用户发送的消息
 				fmt.Printf("[消息] room=%s viewer=%s: %s\n", r.roomNumber, viewer.name, string(data))
-				*batch = append(*batch, &Message{
-					ViewerID: viewerID,
-					Data:     data,
-					Time:     time.Now(),
-				})
+				var messagePb MessagePb
+				err := proto.Unmarshal(data, &messagePb)
+				if err != nil {
+					fmt.Printf("[错误] 批量收集处理观众的消息时发生错误: %v\n", err)
+					continue
+				}
+				messagePb.LiveId = string(r.roomNumber)
+				messagePb.SendClient = &SendClientInfoPb{
+					UserId:   string(viewerID),
+					NickName: viewer.GetName(),
+				}
+				messagePb.Priority = MessagePriority_LOW
+				messagePb.Timestamp = time.Now().UnixMilli()
+				*batch = append(*batch, &messagePb)
 				// 更新房间接收统计
 				r.messageReceivedCnt.Add(1)
 				r.bytesReceivedCnt.Add(int64(len(data)))
@@ -333,7 +378,7 @@ func (r *Room) messageToDataSource() {
 	fmt.Printf("房间 %s messageToDataSource 协程开始运行\n", r.roomNumber)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-
+	streamKey := fmt.Sprintf(Live_Msg_Broadcast, r.firmUUID, r.roomNumber)
 	for {
 		select {
 		case <-r.roomCtx.Done():
@@ -344,7 +389,7 @@ func (r *Room) messageToDataSource() {
 			messages := r.readFromMessageRingBuffer()
 			for _, msg := range messages {
 				if msg != nil && r.dataSource != nil {
-					err := r.dataSource.SendMessage(r.roomCtx, r.roomNumber, msg)
+					err := r.dataSource.SendMessage(r.roomCtx, streamKey, msg)
 					if err != nil {
 						fmt.Printf("发送消息到数据源失败: %v\n", err)
 					}
@@ -355,7 +400,7 @@ func (r *Room) messageToDataSource() {
 }
 
 // readFromMessageRingBuffer 从 ring buffer 读取消息
-func (r *Room) readFromMessageRingBuffer() []*Message {
+func (r *Room) readFromMessageRingBuffer() []*MessagePb {
 	r.viewerSendMu.Lock()
 	defer r.viewerSendMu.Unlock()
 
@@ -374,7 +419,7 @@ func (r *Room) readFromMessageRingBuffer() []*Message {
 		available = maxMessages
 	}
 
-	var messages []*Message
+	var messages []*MessagePb
 	bufferSize := int64(MessageRingBufferSize)
 	for i := int64(0); i < available; i++ {
 		index := (readPos + i) % bufferSize
@@ -394,7 +439,6 @@ func (r *Room) readFromMessageRingBuffer() []*Message {
 
 // 房间广播消息处理器
 func (r *Room) broadcastHandler() {
-
 	ticker := time.NewTicker(10 * time.Millisecond) // 增可不漑消恫速度，给观众更多时间处理
 	defer ticker.Stop()
 	for {
@@ -403,7 +447,16 @@ func (r *Room) broadcastHandler() {
 			return // 房间关闭，退出广播
 		case <-ticker.C:
 			if r.dataSource != nil {
-				messages := r.dataSource.GetMessage(r.roomCtx, r.roomNumber)
+				//高优先级消息
+				hpStreamKey := fmt.Sprintf(Live_Msg_Broadcast+":hp", r.roomNumber)
+				hpMessages := r.dataSource.GetMessage(r.roomCtx, hpStreamKey)
+				if len(hpMessages) > 0 {
+					// 广播消息给所有观众
+					r.broadcastToViewers(hpMessages)
+				}
+				//低优先级消息
+				streamKey := fmt.Sprintf(Live_Msg_Broadcast, r.roomNumber)
+				messages := r.dataSource.GetMessage(r.roomCtx, streamKey)
 				if len(messages) > 0 {
 					// 广播消息给所有观众
 					r.broadcastToViewers(messages)
@@ -414,7 +467,7 @@ func (r *Room) broadcastHandler() {
 }
 
 // broadcastToViewers 广播消息给所有观众
-func (r *Room) broadcastToViewers(messages []*Message) {
+func (r *Room) broadcastToViewers(messages []*MessagePb) {
 	if len(messages) == 0 {
 		return
 	}
@@ -423,14 +476,13 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 	highPriorityMessages := make([][]byte, 0)
 	lowPriorityMessages := make([][]byte, 0)
 	for _, msg := range messages {
-		// 序列化为JSON或其他格式
-		data, err := json.Marshal(msg)
+		data, err := proto.Marshal(msg)
 		if err != nil {
 			// 记录错误，继续处理其他消息
 			log.Printf("Failed to marshal message: %v", err)
 			continue
 		}
-		if msg.Priority == MessagePriorityHigh {
+		if msg.Priority == MessagePriority_HIGH {
 			highPriorityMessages = append(highPriorityMessages, data)
 		} else {
 			lowPriorityMessages = append(lowPriorityMessages, data)
@@ -458,12 +510,12 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 			}
 			// 发送高优先级消息
 			if len(highPriorityMessages) > 0 {
-				r.sendPriorityMessagesToViewer(v, highPriorityMessages, MessagePriorityHigh)
+				r.sendPriorityMessagesToViewer(v, highPriorityMessages, MessagePriority_HIGH)
 			}
 
 			// 发送低优先级消息
 			if len(lowPriorityMessages) > 0 {
-				r.sendPriorityMessagesToViewer(v, lowPriorityMessages, MessagePriorityLow)
+				r.sendPriorityMessagesToViewer(v, lowPriorityMessages, MessagePriority_LOW)
 			}
 		}(viewer)
 	}
@@ -477,7 +529,7 @@ func (r *Room) sendPriorityMessagesToViewer(viewer *Viewer, messageBytes [][]byt
 	}
 
 	for _, msgBytes := range messageBytes {
-		if priority == MessagePriorityHigh {
+		if priority == MessagePriority_HIGH {
 			r.trySendHighPriorityToViewerBuffer(viewer, msgBytes)
 		} else {
 			r.trySendToViewerBuffer(viewer, msgBytes)
@@ -494,7 +546,7 @@ func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
 	newItem := &item{
 		seq:      writePos,
 		data:     message,
-		priority: MessagePriorityLow,
+		priority: MessagePriority_LOW,
 	}
 
 	// 直接覆盖（不检查是否满）
@@ -515,7 +567,7 @@ func (r *Room) trySendHighPriorityToViewerBuffer(viewer *Viewer, message []byte)
 	newItem := &item{
 		seq:      writePos,
 		data:     message,
-		priority: MessagePriorityHigh,
+		priority: MessagePriority_HIGH,
 	}
 
 	// 直接写入高优先级缓冲区
@@ -526,21 +578,6 @@ func (r *Room) trySendHighPriorityToViewerBuffer(viewer *Viewer, message []byte)
 	viewer.hasHighPriorityMsg.Store(1)
 
 	return true
-}
-
-// DataSource 数据源接口，用于发送和获取消息
-type DataSource interface {
-	// SendMessage 发送消息到数据源
-	SendMessage(ctx context.Context, roomNumber RoomNumber, msg *Message) error
-
-	// GetMessage 从数据源获取消息
-	GetMessage(ctx context.Context, roomNumber RoomNumber) []*Message
-
-	// GetRedisBytesSent 获取发送到Redis的字节数
-	GetRedisBytesSent(roomNumber RoomNumber) int64
-
-	// GetRedisBytesRecv 获取从Redis接收的字节数
-	GetRedisBytesRecv(roomNumber RoomNumber) int64
 }
 
 // GetCapacity 获取房间当前最大容纳人数
@@ -583,6 +620,11 @@ func (r *Room) Info() string {
 // 获取房间号
 func (r *Room) RoomNumber() RoomNumber {
 	return r.roomNumber
+}
+
+// 获取事业部ID
+func (r *Room) GetFirmUUID() FirmUUID {
+	return r.firmUUID
 }
 
 // 根据ViewerID获取观众
@@ -641,52 +683,38 @@ func (r *Room) BytesReceived() int64 {
 }
 
 // RedisBytesSent 获取房间发送到Redis的字节数
-func (r *Room) RedisBytesSent() int64 {
+func (r *Room) RedisBytesSent(streamKey string) int64 {
 	if r.dataSource != nil {
-		return r.dataSource.GetRedisBytesSent(r.roomNumber)
+		return r.dataSource.GetRedisBytesSent(streamKey)
 	}
 	return 0
 }
 
 // RedisBytesRecv 获取房间从Redis接收的字节数
-func (r *Room) RedisBytesRecv() int64 {
+func (r *Room) RedisBytesRecv(streamKey string) int64 {
 	if r.dataSource != nil {
-		return r.dataSource.GetRedisBytesRecv(r.roomNumber)
+		return r.dataSource.GetRedisBytesRecv(streamKey)
 	}
 	return 0
 }
 
 // SendSystemMessage 发送系统消息（高优先级）
-func (r *Room) SendSystemMessage(msgType MessageType, data []byte) {
-	msg := &Message{
-		Type:     msgType,
-		Data:     data,
-		Time:     time.Now(),
-		Priority: MessagePriorityHigh, // 系统消息始终是高优先级
+func (r *Room) SendSystemMessage(data []byte) {
+	var msg MessagePb
+	err := proto.Unmarshal(data, &msg)
+	if err != nil {
+		fmt.Println("无法解码系统消息:", err)
+		return
 	}
 
 	// 直接写入到消息环形缓冲区
-	r.writeToMessageRingBuffer(msg)
+	r.writeToMessageRingBuffer(&msg)
 
 	// 更新房间发送统计
 	r.messageSentCnt.Add(1)
 	r.bytesSentCnt.Add(int64(len(data)))
 }
 
-// SendUserMessage 发送用户消息（低优先级）
-func (r *Room) SendUserMessage(viewerID ViewerID, msgType MessageType, data []byte) {
-	msg := &Message{
-		ViewerID: viewerID,
-		Type:     msgType,
-		Data:     data,
-		Time:     time.Now(),
-		Priority: MessagePriorityLow, // 用户消息始终是低优先级
-	}
-
-	// 直接写入到消息环形缓冲区
-	r.writeToMessageRingBuffer(msg)
-
-	// 更新房间发送统计
-	r.messageSentCnt.Add(1)
-	r.bytesSentCnt.Add(int64(len(data)))
+func (r *Room) GetRoomCtx() context.Context {
+	return r.roomCtx
 }

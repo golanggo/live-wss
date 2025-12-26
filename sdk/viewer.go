@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 // ViewerType 用户类型
@@ -124,6 +126,10 @@ type Viewer struct {
 	lastActiveTime time.Time // 最后活跃时间
 	lastPingTime   time.Time // 最后Ping时间
 
+	accumulatedViewDuration atomic.Int64 // 当前会话累计时长（秒）
+	previousViewDuration    int64        // 之前累计的时长（从Redis获取）
+	lastUpdateTime          time.Time    // 上次更新Redis时间
+
 	// 消息计数
 	sentMessageCnt     atomic.Int64 // 用户发送的消息数
 	receivedMessageCnt atomic.Int64 // 用户接收的消息数
@@ -172,6 +178,7 @@ func NewViewerWithInfo(roomCtx context.Context, vid ViewerID, name string, userT
 		startTime:      now,
 		lastActiveTime: now,
 		lastPingTime:   now,
+		lastUpdateTime: now,
 
 		roomCtx:         roomCtx,
 		viewerCtx:       vctx,
@@ -187,6 +194,7 @@ func NewViewerWithInfo(roomCtx context.Context, vid ViewerID, name string, userT
 
 		// 初始化自定义数据
 		CustomData: make(map[string]any),
+		Conn:       conn,
 	}
 }
 
@@ -226,6 +234,8 @@ func (v *Viewer) GetUserInfo() ViewerInfo {
 }
 
 func (v *Viewer) Start() {
+	// 存储之前会话时长
+	go v.StorePreviousSessionTime()
 
 	// 网络->slots->房间
 	go v.ReadMessageWebSocketLoop()
@@ -246,6 +256,7 @@ func (v *Viewer) StartMessageReader() {
 
 // Write 将用户的发送的数据写入一个环形缓冲区
 func (v *Viewer) Write(b []byte) {
+	log.Println("write", string(b))
 	buf := make([]byte, len(b))
 	copy(buf, b)
 
@@ -364,33 +375,47 @@ func (v *Viewer) tryResizeSendBuffer() {
 func (v *Viewer) ReadMessageWebSocketLoop() {
 	// 如果没有WebSocket连接，直接返回
 	if v.Conn == nil {
+		log.Println("no websocket connection")
 		return
 	}
 
 	for {
 		select {
 		case <-v.viewerCtx.Done():
-			// 上下文被取消，关闭连接
+			log.Println("viewer context done")
 			return
 		case <-v.roomCtx.Done():
-			// 房间关闭，关闭连接
+			log.Println("room context done")
 			return
 		default:
 			_, msgByte, err := v.Conn.ReadMessage()
-
 			if err != nil {
-				// 连接关闭或发生错误，退出循环
-				// 关闭连接
 				v.Conn.Close()
-				// 通知房间该观众离开
 				if v.Room != nil {
 					v.Room.LeaveRoom(v)
 				}
 				return
 			}
+			messageStr := string(msgByte)
+			log.Println("read message", messageStr)
+
+			// 检查是否为ping消息
+			if messageStr == "ping" {
+				v.accumulatedViewDuration.Add(3)
+				v.UpdateActiveTime()
+				continue
+			}
+			var message MessagePb
+			message.Code = "Send_Message"
+			message.Data = messageStr
+			respData, err := proto.Marshal(&message)
+			if err != nil {
+				log.Println("marshal error", err)
+				continue
+			}
 
 			// 写入环形缓冲区
-			v.Write(msgByte)
+			v.Write(respData)
 
 			//只有当hasMessage为0时，才唤醒读取消息协程
 			if v.sendRoomHasMessage.CompareAndSwap(0, 1) {
@@ -728,4 +753,31 @@ func (v *Viewer) PrintViewerInfo() {
 	fmt.Printf("  发送消息数: %d\n", v.sentMessageCnt.Load())
 	fmt.Printf("  接收消息数: %d\n", v.receivedMessageCnt.Load())
 	fmt.Printf("  观看时间: %s\n", v.WatchTime().String())
+}
+
+// GetTotalWatchTime 获取用户总观看时长（包括之前累计的）
+func (v *Viewer) GetTotalWatchTime() int64 {
+	return v.previousViewDuration + v.accumulatedViewDuration.Load()
+}
+
+// GetCurrentSessionTime 获取当前会话观看时长
+func (v *Viewer) GetCurrentSessionTime() int64 {
+	return v.accumulatedViewDuration.Load()
+}
+
+// 获取用户之前累计的观看时长
+func (v *Viewer) StorePreviousSessionTime() {
+	// 如果房间有数据源，从Redis加载之前累计的时长
+	if v.Room != nil && v.Room.dataSource != nil {
+		key := fmt.Sprintf(Live_WatchDuration, v.Room.firmUUID, v.Room.roomNumber, v.vid)
+		prevTimeStr, err := v.Room.dataSource.Get(v.roomCtx, key)
+		if err == nil && prevTimeStr != nil {
+			prevTimeStr, ok := prevTimeStr.(string)
+			if ok {
+				if prevTime, parseErr := strconv.ParseInt(prevTimeStr, 10, 64); parseErr == nil {
+					v.previousViewDuration = prevTime
+				}
+			}
+		}
+	}
 }

@@ -69,18 +69,25 @@ func (s *LiveWssSDK) GetDataSource() DataSource {
 }
 
 // CreateRoom 创建房间
-func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber RoomNumber, roomName string, maxViewers uint32) error {
+func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber RoomNumber, roomName string, maxViewers uint32, firmUUID FirmUUID) error {
 	if maxViewers == 0 {
 		maxViewers = s.config.DefaultMaxViewers
 	}
 
 	// 创建Redis Stream处理器
+	streamKey := fmt.Sprintf(Live_Msg_Broadcast, firmUUID, roomNumber)
 	if redisDS, ok := s.dataSource.(*RedisDataSource); ok {
-		redisDS.CreateStreamHandler(roomNumber, ctx)
+		redisDS.CreateStreamHandler(ctx, roomNumber, streamKey)
+	}
+
+	// 创建Redis Stream处理器,高优先级
+	HpStreamKey := fmt.Sprintf(Live_Msg_Broadcast+":hp", firmUUID, roomNumber)
+	if redisDS, ok := s.dataSource.(*RedisDataSource); ok {
+		redisDS.CreateStreamHandler(ctx, roomNumber, HpStreamKey)
 	}
 
 	// 创建房间
-	room, err := NewRoom(ctx, roomName, roomNumber, maxViewers)
+	room, err := NewRoom(ctx, roomName, roomNumber, maxViewers, firmUUID)
 	if err != nil {
 		return err
 	}

@@ -33,7 +33,7 @@ func NewRoomManager(maxRoom uint16) *RoomManager {
 	return roomManager
 }
 
-func (m *RoomManager) CreateRoom(ctx context.Context, roomNumber RoomNumber, roomName string, maxViewer uint32) error {
+func (m *RoomManager) CreateRoom(ctx context.Context, roomNumber RoomNumber, roomName string, maxViewer uint32, firmUUID FirmUUID) error {
 	if roomNumber == "" {
 		return ErrInvalidRoomNumber
 	}
@@ -49,7 +49,7 @@ func (m *RoomManager) CreateRoom(ctx context.Context, roomNumber RoomNumber, roo
 		return ErrRoomFull
 	}
 
-	room, err := NewRoom(ctx, roomName, roomNumber, maxViewer)
+	room, err := NewRoom(ctx, roomName, roomNumber, maxViewer, firmUUID)
 	if err != nil {
 		return err
 	}

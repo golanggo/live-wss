@@ -23,6 +23,7 @@ type BenchmarkConfig struct {
 	RoomNumber       string        // 房间号
 	RoomName         string        // 房间名
 	UseRedis         bool          // 是否使用Redis数据源
+	FirmUUID         int64
 }
 
 // 压测结果
@@ -144,7 +145,8 @@ func (b *Benchmark) initDataSource() {
 	}
 	// 使用Redis数据源
 	redisStream := sdk.NewRedisDataSource(redis.RDB)
-	redisStream.CreateStreamHandler(sdk.RoomNumber(b.config.RoomNumber), b.ctx)
+	stream := fmt.Sprintf(sdk.Live_Msg_Broadcast, b.config.FirmUUID)
+	redisStream.CreateStreamHandler(b.ctx, sdk.RoomNumber(b.config.RoomNumber), stream)
 	b.dataSource = &RedisDataSourceAdapter{stream: redisStream, roomNumber: sdk.RoomNumber(b.config.RoomNumber)}
 	fmt.Println("  使用 Redis Stream 数据源")
 }
@@ -155,29 +157,39 @@ type RedisDataSourceAdapter struct {
 	roomNumber sdk.RoomNumber
 }
 
-func (r *RedisDataSourceAdapter) SendMessage(ctx context.Context, roomNumber sdk.RoomNumber, msg *sdk.Message) error {
-	return r.stream.SendMessage(ctx, roomNumber, msg)
+// Get implements sdk.DataSource.
+func (r *RedisDataSourceAdapter) Get(ctx context.Context, key string) (any, error) {
+	panic("unimplemented")
 }
 
-func (r *RedisDataSourceAdapter) GetMessage(ctx context.Context, roomNumber sdk.RoomNumber) []*sdk.Message {
-	return r.stream.GetMessage(ctx, roomNumber)
+// Store implements sdk.DataSource.
+func (r *RedisDataSourceAdapter) Store(ctx context.Context, key string, value any, duration time.Duration) error {
+	panic("unimplemented")
+}
+
+func (r *RedisDataSourceAdapter) SendMessage(ctx context.Context, stream string, msg *sdk.MessagePb) error {
+	return r.stream.SendMessage(ctx, stream, msg)
+}
+
+func (r *RedisDataSourceAdapter) GetMessage(ctx context.Context, stream string) []*sdk.MessagePb {
+	return r.stream.GetMessage(ctx, stream)
 }
 
 // GetRedisBytesSent 获取发送到Redis的字节数
-func (r *RedisDataSourceAdapter) GetRedisBytesSent(roomNumber sdk.RoomNumber) int64 {
-	return r.stream.GetRedisBytesSent(roomNumber)
+func (r *RedisDataSourceAdapter) GetRedisBytesSent(stream string) int64 {
+	return r.stream.GetRedisBytesSent(stream)
 }
 
 // GetRedisBytesRecv 获取从Redis接收的字节数
-func (r *RedisDataSourceAdapter) GetRedisBytesRecv(roomNumber sdk.RoomNumber) int64 {
-	return r.stream.GetRedisBytesRecv(roomNumber)
+func (r *RedisDataSourceAdapter) GetRedisBytesRecv(stream string) int64 {
+	return r.stream.GetRedisBytesRecv(stream)
 }
 
 // createRoom 创建房间
 func (b *Benchmark) createRoom() {
 	fmt.Println("[2/6] 创建直播房间...")
 	var err error
-	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, sdk.RoomNumber(b.config.RoomNumber), uint32(b.config.TotalViewers+1000))
+	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, sdk.RoomNumber(b.config.RoomNumber), uint32(b.config.TotalViewers+1000), sdk.FirmUUID(b.config.FirmUUID))
 	if err != nil {
 		panic(fmt.Sprintf("创建房间失败: %v", err))
 	}
@@ -405,18 +417,18 @@ func (b *Benchmark) collectResults() {
 	websocketBytesReceived := b.room.BytesReceived()
 
 	// 收集Redis层带宽统计
-	redisBytesSent := b.room.RedisBytesSent()
-	redisBytesReceived := b.room.RedisBytesRecv()
+	//redisBytesSent := b.room.RedisBytesSent(b.room)
+	//redisBytesReceived := b.room.RedisBytesRecv()
 
 	// 计算总字节数
-	totalBytesSent = websocketBytesSent + redisBytesSent
-	totalBytesReceived = websocketBytesReceived + redisBytesReceived
+	//totalBytesSent = websocketBytesSent + redisBytesSent
+	//totalBytesReceived = websocketBytesReceived + redisBytesReceived
 
 	b.result.TotalMessagesRecv = totalReceived
 	b.result.TotalBytesSent = totalBytesSent
 	b.result.TotalBytesRecv = totalBytesReceived
-	b.result.RedisBytesSent = redisBytesSent
-	b.result.RedisBytesRecv = redisBytesReceived
+	//b.result.RedisBytesSent = redisBytesSent
+	//b.result.RedisBytesRecv = redisBytesReceived
 	b.result.WebSocketBytesSent = websocketBytesSent
 	b.result.WebSocketBytesRecv = websocketBytesReceived
 

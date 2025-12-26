@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 // Stream处理器
@@ -20,18 +20,18 @@ type StreamHandler struct {
 	rdbClient  *redis.ClusterClient // 添加client字段
 
 	// 使用环形缓冲区替代管道
-	messageRingBuf [RedisDataSourceRingBuffer]*Message // 消息环形缓冲区
-	messageWriteAt atomic.Int64                        // 写入位置
-	messageReadAt  atomic.Int64                        // 读取位置
-	messageMu      sync.RWMutex                        // 保护环形缓冲区
+	messageRingBuf [RedisDataSourceRingBuffer]*MessagePb // 消息环形缓冲区
+	messageWriteAt atomic.Int64                          // 写入位置
+	messageReadAt  atomic.Int64                          // 读取位置
+	messageMu      sync.RWMutex                          // 保护环形缓冲区
 
-	sendRingBuf [RedisDataSourceRingBuffer]*Message // 发送环形缓冲区
-	sendWriteAt atomic.Int64                        // 发送写入位置
-	sendReadAt  atomic.Int64                        // 发送读取位置
-	sendMu      sync.RWMutex                        // 保护发送环形缓冲区
+	sendRingBuf [RedisDataSourceRingBuffer]*MessagePb // 发送环形缓冲区
+	sendWriteAt atomic.Int64                          // 发送写入位置
+	sendReadAt  atomic.Int64                          // 发送读取位置
+	sendMu      sync.RWMutex                          // 保护发送环形缓冲区
 
 	// 用于向房间传递消息的通道
-	messageChan chan *Message
+	messageChan chan *MessagePb
 
 	// Redis带宽统计
 	redisBytesSent atomic.Int64 // 发送到Redis的字节数
@@ -42,12 +42,12 @@ type StreamHandler struct {
 }
 
 // readFromRingBuffer - 从环形缓冲区读取消息
-func (h *StreamHandler) readFromRingBuffer() []*Message {
+func (h *StreamHandler) readFromRingBuffer() []*MessagePb {
 	h.messageMu.Lock()
 	defer h.messageMu.Unlock()
 
 	// 批量读取消息
-	var messages []*Message
+	var messages []*MessagePb
 	readPos := h.messageReadAt.Load()
 	writePos := h.messageWriteAt.Load()
 
@@ -75,7 +75,7 @@ func (h *StreamHandler) readFromRingBuffer() []*Message {
 
 // runSender - 发送消息到Redis Stream
 func (h *StreamHandler) runSender() {
-	batch := make([]*Message, 0, h.getBatchSize())
+	batch := make([]*MessagePb, 0, h.getBatchSize())
 	ticker := time.NewTicker(h.getTickerDuration())
 	defer ticker.Stop()
 
@@ -108,11 +108,11 @@ func (h *StreamHandler) runSender() {
 }
 
 // readFromSendBuffer - 从发送环形缓冲区读取消息
-func (h *StreamHandler) readFromSendBuffer() []*Message {
+func (h *StreamHandler) readFromSendBuffer() []*MessagePb {
 	h.sendMu.Lock()
 	defer h.sendMu.Unlock()
 
-	var messages []*Message
+	var messages []*MessagePb
 	readPos := h.sendReadAt.Load()
 	writePos := h.sendWriteAt.Load()
 
@@ -138,8 +138,32 @@ func (h *StreamHandler) readFromSendBuffer() []*Message {
 	return messages
 }
 
+// sendToRingBuffer - 发送消息到环形缓冲区
+func (h *StreamHandler) sendToRingBuffer(msg *MessagePb) error {
+	h.sendMu.Lock()
+	defer h.sendMu.Unlock()
+
+	// 检查缓冲区是否已满
+	writePos := h.sendWriteAt.Load()
+	readPos := h.sendReadAt.Load()
+	bufferSize := int64(len(h.sendRingBuf))
+
+	if writePos-readPos >= bufferSize {
+		// 缓冲区满，丢弃最旧的消息以腾出空间
+		fmt.Printf("警告: Redis数据源房间 %s 的发送缓冲区已满，丢弃最旧消息\n", h.roomNumber)
+		h.sendReadAt.Store(readPos + 1)
+	}
+
+	// 写入消息到环形缓冲区
+	h.sendRingBuf[writePos%bufferSize] = msg
+	h.sendWriteAt.Store(writePos + 1)
+
+	fmt.Printf("Redis数据源成功将消息发送到房间 %s 的发送缓冲区\n", h.roomNumber)
+	return nil
+}
+
 // sendBatch - 批量发送到Redis
-func (h *StreamHandler) sendBatch(messages []*Message) {
+func (h *StreamHandler) sendBatch(messages []*MessagePb) {
 	if len(messages) == 0 {
 		return
 	}
@@ -161,7 +185,7 @@ func (h *StreamHandler) sendBatch(messages []*Message) {
 
 		batch := messages[i:end]
 		for _, msg := range batch {
-			data, err := json.Marshal(msg)
+			data, err := proto.Marshal(msg)
 			if err != nil {
 				fmt.Printf("序列化消息失败: %v\n", err)
 				continue
@@ -170,10 +194,7 @@ func (h *StreamHandler) sendBatch(messages []*Message) {
 			h.redisBytesSent.Add(int64(len(data)))
 			pipe.XAdd(ctx, &redis.XAddArgs{
 				Stream: h.streamKey,
-				Values: map[string]interface{}{
-					"data": string(data),     // 转换为string，Redis Stream中存储为string
-					"type": string(msg.Type), // 将MessageType转换为字符串
-				},
+				Values: map[string]interface{}{"payload": string(data)},
 				MaxLen: 100000, // 最多保留100000条消息
 				Approx: true,   // 近似修剪，性能更好
 			})
@@ -257,8 +278,8 @@ func (h *StreamHandler) runReceiver() {
 					if data, ok := msg.Values["data"].(string); ok {
 						// 统计从Redis接收的字节数
 						h.redisBytesRecv.Add(int64(len(data)))
-						var message Message
-						if err := json.Unmarshal([]byte(data), &message); err == nil {
+						var message MessagePb
+						if err := proto.Unmarshal([]byte(data), &message); err == nil {
 							// 发送到消息环形缓冲区
 							h.writeToMessageRingBuffer(&message)
 						} else {
@@ -277,7 +298,7 @@ func (h *StreamHandler) runReceiver() {
 }
 
 // writeToMessageRingBuffer - 写入消息到消息环形缓冲区
-func (h *StreamHandler) writeToMessageRingBuffer(msg *Message) {
+func (h *StreamHandler) writeToMessageRingBuffer(msg *MessagePb) {
 	h.messageMu.Lock()
 	defer h.messageMu.Unlock()
 
@@ -299,14 +320,14 @@ func (h *StreamHandler) writeToMessageRingBuffer(msg *Message) {
 	// 同时发送到channel以保持兼容性
 	select {
 	case h.messageChan <- msg:
-		fmt.Printf("成功将消息发送到messageChan: room=%s, viewer=%s\n", h.roomNumber, msg.ViewerID)
+		fmt.Printf("成功将消息发送到messageChan: room=%s, viewer=%s\n", h.roomNumber, msg.SendClient.UserId)
 	default:
 		// 通道满，记录警告但不阻塞
 		fmt.Printf("警告: Stream处理器消息通道已满，消息可能丢失 room=%s\n", h.roomNumber)
 	}
 
 	// 记录消息处理
-	fmt.Printf("房间 %s 处理消息: viewer=%s\n", h.roomNumber, msg.ViewerID)
+	fmt.Printf("房间 %s 处理消息: viewer=%s\n", h.roomNumber, msg.SendClient.UserId)
 }
 
 // getBatchSize 根据用户规模动态设置batch大小

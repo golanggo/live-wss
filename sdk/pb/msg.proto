@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+// 对应 Go 代码中的 package sdk
+package sdk;
+
+// 定义消息优先级枚举（对应 Go 中的 MessagePriority）
+enum MessagePriority {
+  LOW = 0;  // 低优先级
+  HIGH = 1; // 高优先级
+}
+
+// 主消息结构体（对应 Go 中的 MessagePb）
+message MessagePb {
+  SendClientInfoPb sendClient = 1;    // 客户端信息
+  string messageId = 2;               // 消息ID
+  string code = 3;                    // 状态码
+  string msg = 4;                     // 消息内容
+  string data = 5;                    // 附加数据
+  string liveId = 6;                  // 直播ID
+  int64 timestamp = 7;                // 时间戳
+  MessagePriority priority = 8;       // 消息优先级
+}
+
+// 客户端信息结构体（对应 Go 中的 SendClientInfoPb）
+message SendClientInfoPb {
+  string nickName = 1;    // 昵称
+  string userId = 2;      // 用户ID
+  string userTags = 3;    // 用户标签
+  bool isAnchor = 4;      // 是否主播
+  bool isMuted = 5;       // 是否禁言
+  bool isTrigerSwd = 6;   // 是否触发敏感词（注意：原代码中是 TrigerSwd 拼写，保留原拼写）
+}
