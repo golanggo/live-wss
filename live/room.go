@@ -440,8 +440,16 @@ func (r *Room) broadcastToViewersOptimized(messages []*Message) {
 		return
 	}
 
-	// 3. 根据CPU核心数确定工作者数量
-	workerCount := runtime.NumCPU() * 2 // 通常设置为CPU核心数的1-2倍
+	// 3. 动态调整工作者数量
+	// 对于大规模观众，减少工作者数量以降低goroutine创建和同步开销
+	workerCount := runtime.NumCPU()
+	if len(viewers) > 5000 {
+		// 超过5000人时，减少工作者数量
+		workerCount = runtime.NumCPU() / 2
+		if workerCount < 1 {
+			workerCount = 1
+		}
+	}
 	if workerCount > len(viewers) {
 		workerCount = len(viewers)
 	}
@@ -535,7 +543,7 @@ func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
 	viewer.roomBroadcastSlots[writePos].Store(newItem)
 	viewer.roomBroadcastWriteAto.Store(nextWritePos)
 
-	viewer.hasMessage.Store(1) // 告诉用户有新消息
+	viewer.roomBroadcastHasMessage.Store(1) // 告诉用户有新消息
 
 	return true // 总是成功
 }

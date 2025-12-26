@@ -74,11 +74,10 @@ type Viewer struct {
 	sendRoomBufMu      sync.Mutex             // 保护发送缓冲区的调整
 
 	// 改为切片以支持动态调整大小
-	roomBroadcastSlots    []atomic.Pointer[item] // 环形缓冲区，用于存储收集器读取的数据
-	roomBroadcastWriteAto atomic.Int64           // 下一条写位置（收集器只改它）
-	roomBroadcastReadAto  atomic.Int64           // 下一条读位置,发送到用户网络层（用户 goroutine 只改它）
-
-	hasMessage atomic.Int32 // 是否有消息待处理
+	roomBroadcastSlots      []atomic.Pointer[item] // 环形缓冲区，用于存储收集器读取的数据
+	roomBroadcastWriteAto   atomic.Int64           // 下一条写位置（收集器只改它）
+	roomBroadcastReadAto    atomic.Int64           // 下一条读位置,发送到用户网络层（用户 goroutine 只改它）
+	roomBroadcastHasMessage atomic.Int32           // 是否有消息待处理
 
 	roomWriteBufSize atomic.Int64 // 接收缓冲区大小
 	roomWriteBufMu   sync.Mutex   // 保护接收缓冲区的调整
@@ -395,7 +394,7 @@ func (v *Viewer) messageReader() {
 			return // 房间关闭
 		case <-ticker.C:
 			// 检查是否有待处理的消息
-			hasMessage := v.hasMessage.Load()
+			hasMessage := v.roomBroadcastHasMessage.Load()
 			if hasMessage == 1 {
 				v.processBufferedMessages()
 			}
@@ -410,7 +409,7 @@ func (v *Viewer) processBufferedMessages() {
 
 	// 如果没有消息，直接返回
 	if readPos == writePos {
-		v.hasMessage.Store(0)
+		v.roomBroadcastHasMessage.Store(0)
 		return
 	}
 
@@ -442,7 +441,7 @@ func (v *Viewer) processBufferedMessages() {
 	}
 
 	// 重置消息标志
-	v.hasMessage.Store(0)
+	v.roomBroadcastHasMessage.Store(0)
 }
 
 // 通过WebSocket发送消息
