@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -406,26 +407,23 @@ func (r *Room) broadcastHandler() {
 				messages := r.dataSource.GetMessage(r.roomCtx, r.roomNumber)
 				if len(messages) > 0 {
 					// 广播消息给所有观众
-					r.broadcastToViewers(messages)
+					r.broadcastToViewersOptimized(messages)
 				}
 			}
 		}
 	}
 }
 
-// broadcastToViewers 广播消息给所有观众
-func (r *Room) broadcastToViewers(messages []*Message) {
+func (r *Room) broadcastToViewersOptimized(messages []*Message) {
 	if len(messages) == 0 {
 		return
 	}
 
-	// 序列化消息
+	// 1. 序列化消息（保持不变）
 	messageBytes := make([][]byte, 0, len(messages))
 	for _, msg := range messages {
-		// 序列化为JSON或其他格式
 		data, err := json.Marshal(msg)
 		if err != nil {
-			// 记录错误，继续处理其他消息
 			log.Printf("Failed to marshal message: %v", err)
 			continue
 		}
@@ -436,25 +434,77 @@ func (r *Room) broadcastToViewers(messages []*Message) {
 		return
 	}
 
-	// 获取所有观众
-	r.viewerMux.RLock()
-	viewers := make([]*Viewer, 0, len(r.viewers))
-	for _, viewer := range r.viewers {
-		viewers = append(viewers, viewer)
+	// 2. 获取观众列表（优化：减少锁持有时间）
+	viewers := r.getViewerSnapshot()
+	if len(viewers) == 0 {
+		return
 	}
-	r.viewerMux.RUnlock()
 
-	// 异步广播给所有观众，不等待完成
-	for _, viewer := range viewers {
-		go func(v *Viewer) {
-			// 检查观众是否活跃
-			if !r.isViewerActive(v) {
-				return
-			}
-			// 发送消息到观众
-			r.sendMessagesToViewer(v, messageBytes)
-		}(viewer)
+	// 3. 根据CPU核心数确定工作者数量
+	workerCount := runtime.NumCPU() * 2 // 通常设置为CPU核心数的1-2倍
+	if workerCount > len(viewers) {
+		workerCount = len(viewers)
 	}
+	if workerCount == 0 {
+		workerCount = 1
+	}
+
+	// 4. 分桶处理
+	bucketSize := (len(viewers) + workerCount - 1) / workerCount // 向上取整
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+
+	for i := 0; i < workerCount; i++ {
+		go func(workerID int) {
+			defer wg.Done()
+
+			start := workerID * bucketSize
+			end := start + bucketSize
+			if end > len(viewers) {
+				end = len(viewers)
+			}
+
+			// 处理分配给该工作者的观众
+			for j := start; j < end; j++ {
+				v := viewers[j]
+				if r.isViewerActive(v) {
+					r.sendMessagesToViewer(v, messageBytes)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait() // 或者可以选择异步不等待，根据业务需求
+}
+
+// 新增方法：快速获取观众快照，减少锁持有时间
+func (r *Room) getViewerSnapshot() []*Viewer {
+	r.viewerMux.RLock()
+	defer r.viewerMux.RUnlock()
+
+	// 预分配足够容量的切片
+	snapshot := make([]*Viewer, 0, len(r.viewers))
+	for _, viewer := range r.viewers {
+		snapshot = append(snapshot, viewer)
+	}
+	return snapshot
+}
+
+// 或者使用更细粒度的锁版本（如果观众数量特别大）
+func (r *Room) getViewerSnapshotOptimized() []*Viewer {
+	r.viewerMux.RLock()
+	size := len(r.viewers)
+
+	// 先分配空间，然后复制
+	snapshot := make([]*Viewer, size)
+	i := 0
+	for _, viewer := range r.viewers {
+		snapshot[i] = viewer
+		i++
+	}
+
+	r.viewerMux.RUnlock()
+	return snapshot
 }
 
 // sendMessagesToViewer 发送消息到指定观众

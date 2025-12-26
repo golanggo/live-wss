@@ -28,6 +28,27 @@ const (
 	bufferResizeThreshold = 80
 )
 
+type filterType func(b *[]byte) bool
+type Filter struct {
+	f filterType
+}
+
+type FilterTool struct {
+	f []*Filter
+}
+
+func (f *FilterTool) AddFilter(filter filterType) {
+	f.f = append(f.f, &Filter{f: filter})
+}
+func (f *FilterTool) RunFilter(b *[]byte) bool {
+	for _, filter := range f.f {
+		if !filter.f(b) {
+			return false
+		}
+	}
+	return true
+}
+
 // Viewer 观众结构体
 type Viewer struct {
 	vid      ViewerID   // 用户唯一标识
@@ -74,6 +95,8 @@ type Viewer struct {
 	// 字节数统计
 	sentBytesCnt     atomic.Int64 // 用户发送的字节数
 	receivedBytesCnt atomic.Int64 // 用户接收的字节数
+
+	filterTool *FilterTool // 过滤工具
 }
 
 type item struct {
@@ -89,6 +112,7 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 	// 初始化动态大小的缓冲区
 	sendRoomSlots := make([]atomic.Pointer[item], baseRingBufferSize)
 	roomWriteSlots := make([]atomic.Pointer[item], baseRingBufferSize)
+	filterTool := &FilterTool{}
 
 	return &Viewer{
 		vid:      vid,
@@ -108,6 +132,8 @@ func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType View
 		sendRoomBufSize:    atomic.Int64{},
 		roomBroadcastSlots: roomWriteSlots,
 		roomWriteBufSize:   atomic.Int64{},
+
+		filterTool: filterTool,
 	}
 }
 
