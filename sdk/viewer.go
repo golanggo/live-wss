@@ -13,14 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ViewerType 用户类型
-type ViewerType string
 type ViewerID string
-
-const (
-	ViewerTypeViewer ViewerType = "viewer" // 观看者
-	ViewerTypeAnchor ViewerType = "anchor" // 主播
-)
 
 const (
 	baseRingBufferSize = 32768
@@ -31,32 +24,26 @@ const (
 
 // ViewerInfo 用户信息接口，用于扩展用户信息
 type ViewerInfo interface {
-	GetUserID() string
-	GetUserName() string
-	GetUserType() ViewerType
+	GetViewerID() string
+	GetViewerName() string
 	GetCustomInfo() map[string]any
 	GetConn() *websocket.Conn
 }
 
 // DefaultViewerInfo 默认用户信息实现
 type DefaultViewerInfo struct {
-	UserID     string          `json:"user_id"`
-	UserName   string          `json:"user_name"`
-	UserType   ViewerType      `json:"user_type"`
+	ViewerID   string          `json:"viewer_id"`
+	ViewerName string          `json:"viewer_name"`
 	CustomInfo map[string]any  `json:"custom_info"`
 	Conn       *websocket.Conn `json:"conn"`
 }
 
-func (d *DefaultViewerInfo) GetUserID() string {
-	return d.UserID
+func (d *DefaultViewerInfo) GetViewerID() string {
+	return d.ViewerID
 }
 
-func (d *DefaultViewerInfo) GetUserName() string {
-	return d.UserName
-}
-
-func (d *DefaultViewerInfo) GetUserType() ViewerType {
-	return d.UserType
+func (d *DefaultViewerInfo) GetViewerName() string {
+	return d.ViewerName
 }
 
 func (d *DefaultViewerInfo) GetCustomInfo() map[string]any {
@@ -67,11 +54,10 @@ func (d *DefaultViewerInfo) GetConn() *websocket.Conn {
 }
 
 // NewDefaultViewerInfo 创建默认用户信息
-func NewDefaultViewerInfo(userID, userName string, userType ViewerType, conn *websocket.Conn) *DefaultViewerInfo {
+func NewDefaultViewerInfo(vID, vName string, conn *websocket.Conn) *DefaultViewerInfo {
 	return &DefaultViewerInfo{
-		UserID:     userID,
-		UserName:   userName,
-		UserType:   userType,
+		ViewerID:   vID,
+		ViewerName: vName,
 		CustomInfo: make(map[string]any),
 		Conn:       conn,
 	}
@@ -79,13 +65,13 @@ func NewDefaultViewerInfo(userID, userName string, userType ViewerType, conn *we
 
 // Viewer 观众结构体
 type Viewer struct {
-	vid      ViewerID        // 用户唯一标识
-	name     string          // 用户名称
-	userType ViewerType      // 用户类型：观看者或主播
-	Conn     *websocket.Conn // WebSocket连接
+	vid   string          // 用户唯一标识
+	vname string          // 用户名称
+	Conn  *websocket.Conn // WebSocket连接
 
-	// 扩展用户信息
 	UserInfo ViewerInfo // 用户信息接口，允许自定义实现
+	// 扩展字段：允许外部项目添加自定义字段
+	CustomData map[string]any
 
 	Room    *Room           // 所属房间
 	roomCtx context.Context // 根上下文，用于如果房间关闭，用户连接也会关闭
@@ -138,8 +124,6 @@ type Viewer struct {
 
 	// WebSocket写入专用锁，确保并发安全
 	wsWriteMu sync.Mutex
-	// 扩展字段：允许外部项目添加自定义字段
-	CustomData map[string]any
 }
 
 type item struct {
@@ -149,12 +133,12 @@ type item struct {
 }
 
 // NewViewer 创建新的观众连接（使用默认用户信息）
-func NewViewer(roomCtx context.Context, vid ViewerID, name string, userType ViewerType, conn *websocket.Conn) *Viewer {
-	return NewViewerWithInfo(roomCtx, vid, name, userType, conn, nil)
+func NewViewer(roomCtx context.Context, vid string, vname string, conn *websocket.Conn) *Viewer {
+	return NewViewerWithInfo(roomCtx, vid, vname, conn, nil)
 }
 
 // NewViewerWithInfo 创建新的观众连接（支持自定义用户信息）
-func NewViewerWithInfo(roomCtx context.Context, vid ViewerID, name string, userType ViewerType, conn *websocket.Conn, userInfo ViewerInfo) *Viewer {
+func NewViewerWithInfo(roomCtx context.Context, vid string, vname string, conn *websocket.Conn, userInfo ViewerInfo) *Viewer {
 	now := time.Now()
 	vctx, vctxCancel := context.WithCancel(roomCtx)
 
@@ -165,14 +149,15 @@ func NewViewerWithInfo(roomCtx context.Context, vid ViewerID, name string, userT
 
 	// 如果没有提供用户信息，使用默认实现
 	if userInfo == nil {
-		userInfo = NewDefaultViewerInfo(string(vid), name, userType, conn)
+		userInfo = NewDefaultViewerInfo(vid, vname, conn)
 	}
 
 	return &Viewer{
-		vid:      vid,
-		name:     name,
-		userType: userType,
-		UserInfo: userInfo,
+		vid:        vid,
+		vname:      vname,
+		UserInfo:   userInfo,
+		CustomData: make(map[string]any),
+		Conn:       conn,
 
 		startTime:      now,
 		lastActiveTime: now,
@@ -191,9 +176,6 @@ func NewViewerWithInfo(roomCtx context.Context, vid ViewerID, name string, userT
 		highPrioritySlots:  highPrioritySlots, // 添加高优先级缓冲区
 		hasHighPriorityMsg: atomic.Int32{},    // 初始化高优先级消息标志
 
-		// 初始化自定义数据
-		CustomData: make(map[string]any),
-		Conn:       conn,
 	}
 }
 
@@ -245,7 +227,6 @@ func (v *Viewer) Start() {
 	//定时发送Ping消息，检测连接是否断开
 	go v.Ping(30 * time.Second)
 
-	fmt.Printf("%s 加入房间\n", v.name)
 }
 
 // StartMessageReader 启动消息读取器（用于压测，不启动WebSocket相关协程）
@@ -545,7 +526,7 @@ func (v *Viewer) processHighPriorityMessages() {
 		// 发送高优先级消息到WebSocket
 		v.sendMessagesToWebSocket(messages)
 
-		fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.name, len(messages))
+		fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.vname, len(messages))
 	}
 
 	// 重置高优先级消息标志
@@ -584,7 +565,7 @@ func (v *Viewer) processNormalMessages() {
 		v.receivedMessageCnt.Add(int64(messageCount))
 
 		// 添加调试日志
-		fmt.Printf("观众 %s 处理了 %d 条普通消息，累计接收消息数: %d\n", v.name, len(messages), v.receivedMessageCnt.Load())
+		fmt.Printf("观众 %s 处理了 %d 条普通消息，累计接收消息数: %d\n", v.vname, len(messages), v.receivedMessageCnt.Load())
 
 		// 通过WebSocket发送消息
 		v.sendMessagesToWebSocket(messages)
@@ -670,7 +651,6 @@ func (v *Viewer) Close() {
 		v.Conn.Close()
 	}
 
-	fmt.Printf("%s 离开房间 closed\n", v.name)
 }
 
 // UpdateActiveTime 更新最后活跃时间
@@ -687,13 +667,23 @@ func (v *Viewer) GetLastActiveTime() time.Time {
 }
 
 // GetViewerID 获取观众的唯一标识
-func (v *Viewer) GetViewerID() ViewerID {
+func (v *Viewer) GetViewerID() string {
 	return v.vid
 }
 
 // SetViewerID 获取观众的唯一标识
-func (v *Viewer) SetViewerID(id ViewerID) {
-	v.vid = id
+func (v *Viewer) SetViewerID(vid string) {
+	v.vid = vid
+}
+
+// 获取观众名称
+func (v *Viewer) GetViewerName() string {
+	return v.vname
+}
+
+// SetViewerName 设置观众名称
+func (v *Viewer) SetViewerName(vname string) {
+	v.vname = vname
 }
 
 // SentMessages 获取用户发送的消息数
@@ -716,16 +706,6 @@ func (v *Viewer) ReceivedBytes() int64 {
 	return v.receivedBytesCnt.Load()
 }
 
-// 获取观众名称
-func (v *Viewer) GetName() string {
-	return v.name
-}
-
-// 获取观众ID
-func (v *Viewer) GetID() ViewerID {
-	return v.vid
-}
-
 // WatchTime 获取观众在房间中的观看时间
 func (v *Viewer) WatchTime() time.Duration {
 	return v.lastActiveTime.Sub(v.startTime)
@@ -739,7 +719,7 @@ func (v *Viewer) GetStartTime() time.Time {
 	return v.startTime
 }
 func (v *Viewer) PrintViewerInfo() {
-	fmt.Printf("观众 %s 信息:\n", v.name)
+	fmt.Printf("观众 %s 信息:\n", v.vname)
 	fmt.Printf("  观众ID: %s\n", v.vid)
 	fmt.Printf("  加入时间: %s\n", v.startTime.Format(time.RFC3339))
 	fmt.Printf("  最后活跃时间: %s\n", v.lastActiveTime.Format(time.RFC3339))

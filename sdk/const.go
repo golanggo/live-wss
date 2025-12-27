@@ -7,9 +7,6 @@ import (
 	"sync"
 )
 
-type RoomNumber string
-type FirmUUID string
-
 const (
 	Live_Entry             = "%v:own_live:%v:entry:%v"                // 进入直播
 	Live_Banned            = "%v:own_live:%v:banned:%v"               // 封禁用户

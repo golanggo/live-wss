@@ -69,7 +69,7 @@ func (s *LiveWssSDK) GetDataSource() DataSource {
 }
 
 // CreateRoom 创建房间
-func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber RoomNumber, roomName string, maxViewers uint32, firmUUID FirmUUID) error {
+func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber string, roomName string, maxViewers uint32, firmUUID string) error {
 	if maxViewers == 0 {
 		maxViewers = s.config.DefaultMaxViewers
 	}
@@ -100,12 +100,12 @@ func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber RoomNumber, room
 }
 
 // GetRoom 获取房间
-func (s *LiveWssSDK) GetRoom(roomNumber RoomNumber) *Room {
+func (s *LiveWssSDK) GetRoom(roomNumber string) *Room {
 	return s.roomManager.GetRoom(roomNumber)
 }
 
 // RemoveRoom 删除房间
-func (s *LiveWssSDK) RemoveRoom(roomNumber RoomNumber) {
+func (s *LiveWssSDK) RemoveRoom(roomNumber string) {
 	s.roomManager.RemoveRoom(roomNumber)
 }
 

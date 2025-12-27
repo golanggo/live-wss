@@ -33,7 +33,7 @@ func (s *RedisDataSource) Client() *redis.ClusterClient {
 }
 
 // CreateStreamHandler - 为指定房间创建Stream处理器
-func (s *RedisDataSource) CreateStreamHandler(ctx context.Context, roomNumber RoomNumber, streamKey string) {
+func (s *RedisDataSource) CreateStreamHandler(ctx context.Context, roomNumber string, streamKey string) {
 	// 创建Stream处理器
 	handler := &StreamHandler{
 		roomNumber:  roomNumber,

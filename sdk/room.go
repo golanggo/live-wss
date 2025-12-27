@@ -12,8 +12,8 @@ import (
 )
 
 type Room struct {
-	firmUUID   FirmUUID
-	roomNumber RoomNumber
+	firmUUID   string
+	roomNumber string
 	roomName   string
 
 	isOpenRoom atomic.Bool // 房间是否在直播中
@@ -29,8 +29,8 @@ type Room struct {
 	bytesSentCnt       atomic.Int64 // 房间发送的字节数
 	bytesReceivedCnt   atomic.Int64 // 房间接收的字节数
 
-	viewers   map[ViewerID]*Viewer // 观众列表（如果需要跟踪具体观众）
-	viewerMux sync.RWMutex         // 保护 viewerList 的互斥锁
+	viewers   map[string]*Viewer // 观众列表（如果需要跟踪具体观众）
+	viewerMux sync.RWMutex       // 保护 viewerList 的互斥锁
 
 	// 使用 ring buffer 替换通道，避免通道满山丢失消息
 	viewerSendRoomMessageBuf [MessageRingBufferSize]*MessagePb // 环形缓冲区
@@ -38,7 +38,7 @@ type Room struct {
 	viewerSendReadPos        atomic.Int64                      // 读取位置
 	viewerSendMu             sync.RWMutex                      // 保护缓冲区
 
-	viewerWake chan ViewerID // 用户从网络层获取消息后，将用户ID发送到该通道，用于唤醒读取消息协程
+	viewerWake chan string // 用户从网络层获取消息后，将用户ID发送到该通道，用于唤醒读取消息协程
 
 	roomCtx    context.Context    // 传递给其他 goroutine 监听
 	cancelFunc context.CancelFunc // 由房间自己持有，用于主动关闭
@@ -59,16 +59,16 @@ type Room struct {
 	lastLikeCount atomic.Uint32 // 上一次统计点赞数
 }
 
-func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMax uint32, firmUUID FirmUUID) (*Room, error) {
-	if rootName == "" {
+func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax uint32, firmUUID string) (*Room, error) {
+	if len(rootName) == 0 {
 		return nil, ErrNewRoomName
 	}
 
-	if roomNumber == "" {
+	if len(roomNumber) == 0 {
 		return nil, ErrNewRoomNumber
 	}
 
-	if firmUUID == "" {
+	if len(firmUUID) == 0 {
 		return nil, ErrNewRoomFirmUUID
 	}
 
@@ -81,8 +81,8 @@ func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMa
 		roomNumber: roomNumber,
 		roomName:   rootName,
 		maxViewer:  roomMax,
-		viewers:    make(map[ViewerID]*Viewer),
-		viewerWake: make(chan ViewerID, roomMax),
+		viewers:    make(map[string]*Viewer),
+		viewerWake: make(chan string, roomMax),
 		roomCtx:    roomCtx,
 		cancelFunc: cancelFunc,
 	}
@@ -313,7 +313,7 @@ func (r *Room) JoinRoom(viewer *Viewer) error {
 	r.inRoomViewerCnt.Add(1)
 
 	// 增强日志：记录用户加入房间
-	fmt.Printf("room=%s %s 加入房间。\n", r.roomNumber, viewer.name)
+	//fmt.Printf("room=%s %s 加入房间。\n", r.roomNumber, viewer.vname)
 	return nil
 }
 
@@ -351,8 +351,8 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 	}
 
 	// 增强日志：记录用户离开房间
-	fmt.Printf("【Room.LeaveRoom】room=%s viewerID=%s name=%s left room, current online: %d, previous online: %d\n",
-		r.roomNumber, viewer.vid, viewer.name, r.onlineViewer.Load(), currentOnline)
+	// fmt.Printf("【Room.LeaveRoom】room=%s viewerID=%s name=%s left room, current online: %d, previous online: %d\n",
+	// 	r.roomNumber, viewer.vid, viewer.vname, r.onlineViewer.Load(), currentOnline)
 }
 
 // 房间消息收集器
@@ -380,7 +380,7 @@ func (r *Room) MessageCollector() {
 }
 
 // 收集处理单个观众的消息
-func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*MessagePb) {
+func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 	r.viewerMux.RLock()
 	viewer, exists := r.viewers[viewerID]
 	r.viewerMux.RUnlock()
@@ -399,8 +399,8 @@ func (r *Room) processSingleViewer(viewerID ViewerID, batch *[]*MessagePb) {
 		}
 		messagePb.LiveId = string(r.roomNumber)
 		messagePb.SendClient = &SendClientInfoPb{
-			UserId:   string(viewer.GetID()),
-			NickName: viewer.GetName(),
+			UserId:   viewer.GetViewerID(),
+			NickName: viewer.GetViewerName(),
 		}
 		messagePb.Priority = MessagePriority_LOW
 		messagePb.Timestamp = time.Now().UnixMilli()
@@ -426,7 +426,7 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 	limit := 100
 	count := 0
 
-	for viewerID, viewer := range r.viewers {
+	for _, viewer := range r.viewers {
 		if count >= limit {
 			break
 		}
@@ -435,7 +435,7 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 			rawMessages := viewer.CollectMessages()
 			for _, data := range rawMessages {
 				// 添加日志：打印用户发送的消息
-				fmt.Printf("[消息] room=%s viewer=%s: %s\n", r.roomNumber, viewer.name, string(data))
+				//fmt.Printf("[消息] room=%s viewer=%s: %s\n", r.roomNumber, viewer.vname, string(data))
 				var messagePb MessagePb
 				err := proto.Unmarshal(data, &messagePb)
 				if err != nil {
@@ -444,8 +444,8 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 				}
 				messagePb.LiveId = string(r.roomNumber)
 				messagePb.SendClient = &SendClientInfoPb{
-					UserId:   string(viewerID),
-					NickName: viewer.GetName(),
+					UserId:   viewer.GetViewerID(),
+					NickName: viewer.GetViewerName(),
 				}
 				messagePb.Priority = MessagePriority_LOW
 				messagePb.Timestamp = time.Now().UnixMilli()
@@ -467,7 +467,7 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 
 // messageToDataSource 每100ms检查一次 ring buffer，将消息发送到数据源
 func (r *Room) messageToDataSource() {
-	fmt.Printf("房间 %s messageToDataSource 协程开始运行\n", r.roomNumber)
+	//fmt.Printf("房间 %s messageToDataSource 协程开始运行\n", r.roomNumber)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	streamKey := fmt.Sprintf(Live_Msg_Broadcast, r.firmUUID, r.roomNumber)
@@ -710,17 +710,22 @@ func (r *Room) Info() string {
 }
 
 // 获取房间号
-func (r *Room) RoomNumber() RoomNumber {
+func (r *Room) GetRoomNumber() string {
 	return r.roomNumber
 }
 
+// 获取房间号
+func (r *Room) GetRoomName() string {
+	return r.roomName
+}
+
 // 获取事业部ID
-func (r *Room) GetFirmUUID() FirmUUID {
+func (r *Room) GetFirmUUID() string {
 	return r.firmUUID
 }
 
 // 根据ViewerID获取观众
-func (r *Room) GetViewer(viewerID ViewerID) *Viewer {
+func (r *Room) GetViewer(viewerID string) *Viewer {
 	r.viewerMux.RLock()
 	defer r.viewerMux.RUnlock()
 	return r.viewers[viewerID]

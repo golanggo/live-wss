@@ -14,7 +14,7 @@ var (
 )
 
 type RoomManager struct {
-	Rooms      map[RoomNumber]*Room
+	Rooms      map[string]*Room
 	roomRWLock sync.RWMutex
 	MaxRoom    uint16
 }
@@ -25,7 +25,7 @@ func NewRoomManager(maxRoom uint16) *RoomManager {
 	once.Do(func() {
 		roomManager = &RoomManager{
 			//设置默认最大房间数
-			Rooms:   make(map[RoomNumber]*Room, maxRoom),
+			Rooms:   make(map[string]*Room, maxRoom),
 			MaxRoom: maxRoom,
 		}
 	})
@@ -33,7 +33,7 @@ func NewRoomManager(maxRoom uint16) *RoomManager {
 	return roomManager
 }
 
-func (m *RoomManager) CreateRoom(ctx context.Context, roomNumber RoomNumber, roomName string, maxViewer uint32, firmUUID FirmUUID) error {
+func (m *RoomManager) CreateRoom(ctx context.Context, roomNumber string, roomName string, maxViewer uint32, firmUUID string) error {
 	if roomNumber == "" {
 		return ErrInvalidRoomNumber
 	}
@@ -65,13 +65,13 @@ func (m *RoomManager) SetRoom(room *Room) error {
 	return nil
 }
 
-func (m *RoomManager) GetRoom(roomNumber RoomNumber) *Room {
+func (m *RoomManager) GetRoom(roomNumber string) *Room {
 	m.roomRWLock.Lock()
 	defer m.roomRWLock.Unlock()
 	return m.Rooms[roomNumber]
 }
 
-func (m *RoomManager) RemoveRoom(roomNumber RoomNumber) {
+func (m *RoomManager) RemoveRoom(roomNumber string) {
 	m.roomRWLock.Lock()
 	defer m.roomRWLock.Unlock()
 	delete(m.Rooms, roomNumber)

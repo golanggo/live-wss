@@ -15,7 +15,7 @@ import (
 
 // Stream处理器
 type StreamHandler struct {
-	roomNumber RoomNumber
+	roomNumber string
 	streamKey  string
 	rdbClient  *redis.ClusterClient // 添加client字段
 

@@ -146,15 +146,15 @@ func (b *Benchmark) initDataSource() {
 	// 使用Redis数据源
 	redisStream := sdk.NewRedisDataSource(redis.RDB)
 	stream := fmt.Sprintf(sdk.Live_Msg_Broadcast, b.config.FirmUUID)
-	redisStream.CreateStreamHandler(b.ctx, sdk.RoomNumber(b.config.RoomNumber), stream)
-	b.dataSource = &RedisDataSourceAdapter{stream: redisStream, roomNumber: sdk.RoomNumber(b.config.RoomNumber)}
+	redisStream.CreateStreamHandler(b.ctx, b.config.RoomNumber, stream)
+	b.dataSource = &RedisDataSourceAdapter{stream: redisStream, roomNumber: b.config.RoomNumber}
 	fmt.Println("  使用 Redis Stream 数据源")
 }
 
 // RedisDataSourceAdapter Redis数据源适配器
 type RedisDataSourceAdapter struct {
 	stream     *sdk.RedisDataSource
-	roomNumber sdk.RoomNumber
+	roomNumber string
 }
 
 // Get implements sdk.DataSource.
@@ -192,7 +192,7 @@ func (r *RedisDataSourceAdapter) GetRedisBytesRecv(stream string) int64 {
 func (b *Benchmark) createRoom() {
 	fmt.Println("[2/6] 创建直播房间...")
 	var err error
-	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, sdk.RoomNumber(b.config.RoomNumber), uint32(b.config.TotalViewers+1000), sdk.FirmUUID(b.config.FirmUUID))
+	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, b.config.RoomNumber, uint32(b.config.TotalViewers+1000), fmt.Sprintf("%s", b.config.FirmUUID))
 	if err != nil {
 		panic(fmt.Sprintf("创建房间失败: %v", err))
 	}
@@ -238,10 +238,10 @@ func (b *Benchmark) createAndJoinViewers() {
 
 // createAndJoinViewer 创建单个观众并加入房间
 func (b *Benchmark) createAndJoinViewer(idx int) {
-	viewerID := sdk.ViewerID(fmt.Sprintf("viewer_%d", idx))
+	viewerID := fmt.Sprintf("viewer_%d", idx)
 	viewerName := fmt.Sprintf("观众%d", idx)
 
-	viewer := sdk.NewViewer(b.ctx, viewerID, viewerName, sdk.ViewerTypeViewer, nil)
+	viewer := sdk.NewViewer(b.ctx, viewerID, viewerName, nil)
 
 	err := b.room.JoinRoom(viewer)
 	if err != nil {
@@ -285,7 +285,7 @@ func (b *Benchmark) viewerSendMessages(viewer *sdk.Viewer) {
 		}
 
 		// 生成随机消息
-		msg := generateBenchmarkMessage(viewer.GetID(), i)
+		msg := generateBenchmarkMessage(viewer.GetViewerID(), i)
 
 		// 记录发送时间
 		sendTime := time.Now()
@@ -411,7 +411,7 @@ func (b *Benchmark) collectResults() {
 		totalBytesReceived += bytesReceived
 
 		if i < 10 { // 只打印前10个观众的接收消息数
-			fmt.Printf("  观众 %s 接收消息数: %d, 发送字节: %d, 接收字节: %d\n", v.GetName(), received, bytesSent, bytesReceived)
+			fmt.Printf("  观众 %s 接收消息数: %d, 发送字节: %d, 接收字节: %d\n", v.GetViewerName(), received, bytesSent, bytesReceived)
 		}
 	}
 
@@ -564,7 +564,7 @@ func (b *Benchmark) PrintResult() {
 }
 
 // generateBenchmarkMessage 生成压测消息
-func generateBenchmarkMessage(viewerID sdk.ViewerID, seq int) []byte {
+func generateBenchmarkMessage(viewerID string, seq int) []byte {
 	messages := []string{
 		"主播好！",
 		"这个直播太精彩了！",
