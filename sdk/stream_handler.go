@@ -216,11 +216,11 @@ func (h *StreamHandler) runReceiver() {
 	hostname, err := os.Hostname()
 	if err != nil {
 		fmt.Printf("获取hostname失败: %v，使用默认值\n", err)
-		hostname = "default-host"
+		hostname = DefaultHostName
 	}
 	// 为每个hostname创建独立的消费组，这样多个实例可以各自接收完整的消息
-	groupName := fmt.Sprintf("%s:group", hostname) // 每个实例有独立的消费组
-	consumerName := "consumer1"                    // 消费者名称统一
+	groupName := fmt.Sprintf(GroupName, hostname) // 每个实例有独立的消费组
+	consumerName := DefaultConsumerName           // 消费者名称统一
 
 	// 创建消费组（如果不存在）
 	ctx := context.Background()
@@ -275,7 +275,7 @@ func (h *StreamHandler) runReceiver() {
 				for _, msg := range stream.Messages {
 					messageCount++
 					// 解析消息
-					if data, ok := msg.Values["data"].(string); ok {
+					if data, ok := msg.Values["payload"].(string); ok {
 						// 统计从Redis接收的字节数
 						h.redisBytesRecv.Add(int64(len(data)))
 						var message MessagePb
@@ -320,14 +320,14 @@ func (h *StreamHandler) writeToMessageRingBuffer(msg *MessagePb) {
 	// 同时发送到channel以保持兼容性
 	select {
 	case h.messageChan <- msg:
-		fmt.Printf("成功将消息发送到messageChan: room=%s, viewer=%s\n", h.roomNumber, msg.SendClient.UserId)
+		fmt.Printf("成功将消息发送到messageChan: room=%s \n", h.roomNumber)
 	default:
 		// 通道满，记录警告但不阻塞
 		fmt.Printf("警告: Stream处理器消息通道已满，消息可能丢失 room=%s\n", h.roomNumber)
 	}
 
 	// 记录消息处理
-	fmt.Printf("房间 %s 处理消息: viewer=%s\n", h.roomNumber, msg.SendClient.UserId)
+	fmt.Printf("房间 %s 处理消息 \n", h.roomNumber)
 }
 
 // getBatchSize 根据用户规模动态设置batch大小

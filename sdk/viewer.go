@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"google.golang.org/protobuf/proto"
 )
 
 // ViewerType 用户类型
@@ -397,26 +396,15 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 				return
 			}
 			messageStr := string(msgByte)
-			log.Println("read message", messageStr)
 
 			// 检查是否为ping消息
 			if messageStr == "ping" {
-				fmt.Println("received ping message")
 				v.accumulatedViewDuration.Add(3)
 				v.UpdateActiveTime()
 				continue
 			}
-			var message MessagePb
-			message.Code = "Send_Message"
-			message.Data = messageStr
-			respData, err := proto.Marshal(&message)
-			if err != nil {
-				log.Println("marshal error", err)
-				continue
-			}
-
 			// 写入环形缓冲区
-			v.Write(respData)
+			v.Write(msgByte)
 
 			//只有当hasMessage为0时，才唤醒读取消息协程
 			if v.sendRoomHasMessage.CompareAndSwap(0, 1) {
@@ -701,6 +689,11 @@ func (v *Viewer) GetLastActiveTime() time.Time {
 // GetViewerID 获取观众的唯一标识
 func (v *Viewer) GetViewerID() ViewerID {
 	return v.vid
+}
+
+// SetViewerID 获取观众的唯一标识
+func (v *Viewer) SetViewerID(id ViewerID) {
+	v.vid = id
 }
 
 // SentMessages 获取用户发送的消息数

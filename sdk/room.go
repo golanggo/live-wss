@@ -252,7 +252,7 @@ func (r *Room) storeLikeCountToDataSource() {
 			// 存储成功，更新记录的上一次值
 			r.lastLikeCount.Store(currentLikeCount)
 		} else {
-			fmt.Printf("存储点赞数到Redis失败: %v\n, 房间: %s\n", err, r.roomNumber)
+			fmt.Printf("【ERROR】存储点赞数到Redis失败: %v\n, 房间: %s\n", err, r.roomNumber)
 		}
 	}
 }
@@ -272,8 +272,6 @@ func (r *Room) storeViewerDurationsToDataSource() {
 			err := r.dataSource.Store(r.roomCtx, key, totalDuration, 36*time.Hour)
 			if err != nil {
 				fmt.Printf("存储用户时长到Redis失败: %v, 用户: %s, 房间: %s\n", err, viewerID, r.roomNumber)
-			} else {
-				fmt.Printf("存储用户时长: %s, 时长: %d秒\n", key, totalDuration)
 			}
 		}
 	}
@@ -542,14 +540,14 @@ func (r *Room) broadcastHandler() {
 		case <-ticker.C:
 			if r.dataSource != nil {
 				//高优先级消息
-				hpStreamKey := fmt.Sprintf(Live_Msg_Broadcast+":hp", r.roomNumber)
+				hpStreamKey := fmt.Sprintf(Live_Msg_Broadcast_HP, r.firmUUID, r.roomNumber)
 				hpMessages := r.dataSource.GetMessage(r.roomCtx, hpStreamKey)
 				if len(hpMessages) > 0 {
 					// 广播消息给所有观众
 					r.broadcastToViewers(hpMessages)
 				}
 				//低优先级消息
-				streamKey := fmt.Sprintf(Live_Msg_Broadcast, r.roomNumber)
+				streamKey := fmt.Sprintf(Live_Msg_Broadcast, r.firmUUID, r.roomNumber)
 				messages := r.dataSource.GetMessage(r.roomCtx, streamKey)
 				if len(messages) > 0 {
 					// 广播消息给所有观众

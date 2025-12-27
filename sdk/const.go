@@ -19,6 +19,7 @@ const (
 	Live_Liked_Count       = "%v:own_live:%v:liked_count"             // 点赞数
 	Live_Comment_Count     = "%v:own_live:%v:comment_count"           // 评论数
 	Live_Msg_Broadcast     = "%v:own_live:%v:broadcast"               // 消息广播
+	Live_Msg_Broadcast_HP  = "%v:own_live:%v:broadcast:hp"            // 高优先级消息广播
 	Live_WatchDuration     = "%v:own_live:%v:watch_duration:%v"       // 进入直播观看时长
 )
 
@@ -36,6 +37,12 @@ var (
 	ErrNewRoomName     = errors.New("新房间名称不能为空")
 	ErrNewRoomNumber   = errors.New("新房间号不能为空")
 	ErrNewRoomFirmUUID = errors.New("事业部ID不能为空")
+)
+
+const (
+	DefaultHostName     = "default-talk-host"
+	DefaultConsumerName = "talk-consumer1"
+	GroupName           = "%s:group"
 )
 
 // 压缩相关配置
