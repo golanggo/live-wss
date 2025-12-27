@@ -21,11 +21,7 @@ type Room struct {
 	startTime atomic.Value // 开播时间
 	endTime   atomic.Value // 直播结束时间
 
-	maxViewer    uint32        // 房间最大容容纳人数
-	onlineViewer atomic.Uint32 // 实时在线人数
-	totalViewer  atomic.Uint32 // 总观看人数
-
-	likeCount atomic.Uint32 // 点赞数
+	maxViewer uint32 // 房间最大容容纳人数
 
 	// 消息和字节数统计
 	messageSentCnt     atomic.Int64 // 房间发送的消息数
@@ -49,6 +45,18 @@ type Room struct {
 
 	//数据源
 	dataSource DataSource
+
+	inRoomViewerCnt        atomic.Uint32 // 进入房间人数
+	leaveRoomViewerCnt     atomic.Uint32 // 离开房间人数
+	lastInRoomViewerCnt    atomic.Uint32 // 上一次统计进入房间人数
+	lastLeaveRoomViewerCnt atomic.Uint32 // 上一次统计离开房间人数
+
+	onlineViewer       atomic.Uint32 // 实时在线人数
+	totalViewer        atomic.Uint32 // 总观看人数
+	lastTotalViewerCnt atomic.Uint32 // 上一次统计总观看人数
+
+	likeCount     atomic.Uint32 // 点赞数
+	lastLikeCount atomic.Uint32 // 上一次统计点赞数
 }
 
 func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMax uint32, firmUUID FirmUUID) (*Room, error) {
@@ -84,6 +92,12 @@ func NewRoom(ctx context.Context, rootName string, roomNumber RoomNumber, roomMa
 
 	// 设置房间状态为直播中
 	room.isOpenRoom.Store(true)
+
+	// 统计信息
+	room.lastInRoomViewerCnt.Store(0)
+	room.lastLeaveRoomViewerCnt.Store(0)
+	room.lastLikeCount.Store(0)
+	room.lastTotalViewerCnt.Store(0)
 
 	return room, nil
 }
@@ -121,8 +135,16 @@ func (r *Room) writeToMessageRingBuffer(msg *MessagePb) {
 	}
 
 	// 组件规一、维护 ring buffer的一程目标、持一个序列号且制造新消息提验查是否需要
-	bufferMsg := *msg
-	r.viewerSendRoomMessageBuf[writePos] = &bufferMsg
+	bufferMsg := &MessagePb{
+		SendClient: msg.SendClient,
+		Code:       msg.Code,
+		Msg:        msg.Msg,
+		Data:       msg.Data,
+		Priority:   msg.Priority,
+		LiveId:     msg.LiveId,
+		Timestamp:  msg.Timestamp,
+	}
+	r.viewerSendRoomMessageBuf[writePos] = bufferMsg
 
 	// 更新写入位置
 	r.viewerSendWritePos.Store(nextWritePos)
@@ -148,30 +170,95 @@ func (r *Room) Start(dataSource DataSource) {
 	// 房间->观众网络
 	go r.broadcastHandler()
 
-	// 房间->数据源
-	go r.storeViewerDurationToDataSource()
+	// 房间统计数据->数据源
+	go r.storeSummaryToDataSource()
 
 	fmt.Printf("%s 房间已经启动\n", r.roomNumber)
 }
 
-// 存储用户时长到Redis的协程
-func (r *Room) storeViewerDurationToDataSource() {
-	fmt.Printf("房间 %s storeViewerDurationToDataSource 协程开始运行\n", r.roomNumber)
+// 存储统计数据到Redis的协程
+func (r *Room) storeSummaryToDataSource() {
+	fmt.Printf("房间 %s storeSummaryToDataSource 协程开始运行\n", r.roomNumber)
 	ticker := time.NewTicker(12 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.roomCtx.Done():
-			fmt.Printf("房间 %s storeViewerDurationToDataSource 协程退出（房间上下文取消）\n", r.roomNumber)
+			fmt.Printf("房间 %s storeSummaryToDataSource 协程退出（房间上下文取消）\n", r.roomNumber)
 			return // 房间关闭ok退出
 		case <-ticker.C:
-			r.storeViewerDurationsToRedis()
+			// 存储在线用户数
+			r.storeViewerCntToDataSource()
+
+			// 存储点赞数
+			r.storeLikeCountToDataSource()
+
+			// 存储用户时长
+			r.storeViewerDurationsToDataSource()
+		}
+	}
+}
+
+// 存储在线用户数
+func (r *Room) storeViewerCntToDataSource() {
+	// 原子读取当前值
+	currentInCnt := r.inRoomViewerCnt.Load()
+	currentLeaveCnt := r.leaveRoomViewerCnt.Load()
+	lastInCnt := r.lastInRoomViewerCnt.Load()
+	lastLeaveCnt := r.lastLeaveRoomViewerCnt.Load()
+
+	// 计算相对于上次的净变化（可以为正或负）
+	netChange := int64(currentInCnt-lastInCnt) - int64(currentLeaveCnt-lastLeaveCnt)
+
+	// 实时在线人数
+	if netChange != 0 { // 只有净变化不为0时才更新
+		key := fmt.Sprintf(Live_Online_User_Count, r.firmUUID, r.roomNumber)
+		err := r.dataSource.AccumulatedBy(r.roomCtx, key, netChange)
+		if err == nil {
+			// 更新记录的上一次值
+			r.lastInRoomViewerCnt.Store(currentInCnt)
+			r.lastLeaveRoomViewerCnt.Store(currentLeaveCnt)
+		} else {
+			fmt.Printf("存储净增加人数到Redis失败: %v, 房间: %s\n", err, r.roomNumber)
+		}
+	}
+
+	// 累计观看人次
+	currentTotalViewerCnt := r.totalViewer.Load()
+	lastTotalViewerCnt := r.lastTotalViewerCnt.Load()
+	netChangeTotalViewerCnt := int64(currentTotalViewerCnt - lastTotalViewerCnt)
+	if netChangeTotalViewerCnt != 0 {
+		key := fmt.Sprintf(Live_Total_Count, r.firmUUID, r.roomNumber)
+		err := r.dataSource.AccumulatedBy(r.roomCtx, key, netChangeTotalViewerCnt)
+		if err == nil {
+			// 存储成功，更新记录的上一次值
+			r.lastTotalViewerCnt.Store(currentTotalViewerCnt)
+		} else {
+			fmt.Printf("存储累计观看人数到Redis失败: %v\n, 房间: %s\n", err, r.roomNumber)
+		}
+	}
+}
+
+// 存储点赞数到Redis
+func (r *Room) storeLikeCountToDataSource() {
+	// 累计点赞数
+	currentLikeCount := r.likeCount.Load()
+	lastLikeCount := r.lastLikeCount.Load()
+	netChangeLikeCount := int64(currentLikeCount - lastLikeCount)
+	if netChangeLikeCount != 0 {
+		key := fmt.Sprintf(Live_Liked_Count, r.firmUUID, r.roomNumber)
+		err := r.dataSource.AccumulatedBy(r.roomCtx, key, netChangeLikeCount)
+		if err == nil {
+			// 存储成功，更新记录的上一次值
+			r.lastLikeCount.Store(currentLikeCount)
+		} else {
+			fmt.Printf("存储点赞数到Redis失败: %v\n, 房间: %s\n", err, r.roomNumber)
 		}
 	}
 }
 
 // 将用户时长存储到Redis
-func (r *Room) storeViewerDurationsToRedis() {
+func (r *Room) storeViewerDurationsToDataSource() {
 	r.viewerMux.RLock()
 	defer r.viewerMux.RUnlock()
 
@@ -225,6 +312,7 @@ func (r *Room) JoinRoom(viewer *Viewer) error {
 	// 更新在线人数和总人数
 	r.onlineViewer.Add(1)
 	r.totalViewer.Add(1)
+	r.inRoomViewerCnt.Add(1)
 
 	// 增强日志：记录用户加入房间
 	fmt.Printf("room=%s %s 加入房间。\n", r.roomNumber, viewer.name)
@@ -256,6 +344,12 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 	// 减1：利用无符号整数溢出特性，^uint32(0) 等于最大无符号32位整数，加后溢出即为减1
 	if currentOnline > 0 {
 		r.onlineViewer.Add(^uint32(0))
+		r.leaveRoomViewerCnt.Add(1)
+	} else {
+		r.lastInRoomViewerCnt.Store(0)
+		r.lastLeaveRoomViewerCnt.Store(0)
+		r.lastLikeCount.Store(0)
+		r.lastTotalViewerCnt.Store(0)
 	}
 
 	// 增强日志：记录用户离开房间

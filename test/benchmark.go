@@ -166,6 +166,9 @@ func (r *RedisDataSourceAdapter) Get(ctx context.Context, key string) (any, erro
 func (r *RedisDataSourceAdapter) Store(ctx context.Context, key string, value any, duration time.Duration) error {
 	panic("unimplemented")
 }
+func (r *RedisDataSourceAdapter) AccumulatedBy(ctx context.Context, key string, value int64) error {
+	panic("unimplemented")
+}
 
 func (r *RedisDataSourceAdapter) SendMessage(ctx context.Context, stream string, msg *sdk.MessagePb) error {
 	return r.stream.SendMessage(ctx, stream, msg)

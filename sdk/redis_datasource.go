@@ -114,3 +114,8 @@ func (s *RedisDataSource) Store(ctx context.Context, key string, value any, dura
 func (s *RedisDataSource) Get(ctx context.Context, key string) (any, error) {
 	return s.rdbClient.Get(ctx, key).Result()
 }
+
+// Accumulated 累计键值对到Redis
+func (s *RedisDataSource) AccumulatedBy(ctx context.Context, key string, value int64) error {
+	return s.rdbClient.IncrBy(ctx, key, value).Err()
+}

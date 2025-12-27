@@ -401,6 +401,7 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 
 			// 检查是否为ping消息
 			if messageStr == "ping" {
+				fmt.Println("received ping message")
 				v.accumulatedViewDuration.Add(3)
 				v.UpdateActiveTime()
 				continue

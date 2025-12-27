@@ -24,4 +24,6 @@ type DataSource interface {
 
 	// Get 从Redis获取值
 	Get(ctx context.Context, key string) (any, error)
+
+	AccumulatedBy(ctx context.Context, key string, value int64) error
 }
