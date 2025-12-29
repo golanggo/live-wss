@@ -593,7 +593,7 @@ func (v *Viewer) sendMessagesToWebSocket(messages [][]byte) {
 		// 设置写超时
 		v.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 
-		err := v.Conn.WriteMessage(websocket.TextMessage, msg)
+		err := v.Conn.WriteMessage(websocket.BinaryMessage, msg)
 		if err != nil {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
 			return
