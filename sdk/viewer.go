@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -380,8 +381,18 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 
 			// 检查是否为ping消息
 			if messageStr == "ping" {
-				v.accumulatedViewDuration.Add(3)
+				v.accumulatedViewDuration.Add(3000)
 				v.UpdateActiveTime()
+				continue
+			}
+			// 处理时长累计心跳
+			if strings.HasPrefix(messageStr, "ping_") {
+				// 提取毫秒数
+				msStr := strings.TrimPrefix(messageStr, "ping_")
+				if ms, err := strconv.Atoi(msStr); err == nil && ms > 0 {
+					v.accumulatedViewDuration.Add(int64(ms))
+					v.UpdateActiveTime()
+				}
 				continue
 			}
 			// 写入环形缓冲区
