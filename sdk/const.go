@@ -20,6 +20,10 @@ const (
 	Live_WatchDuration     = "%v:own_live:%v:watch_duration:%v"       // 进入直播观看时长
 )
 
+const (
+	Code_Event_User_Click_Like = "event_user_click_like" // 用户点赞
+)
+
 // 连接监控和清理配置常量
 const (
 	// MaxPingInterval 最大Ping间隔（秒）

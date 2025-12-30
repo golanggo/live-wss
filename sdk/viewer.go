@@ -378,6 +378,7 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 				return
 			}
 			messageStr := string(msgByte)
+			fmt.Print(messageStr)
 
 			// 检查是否为ping消息
 			if messageStr == "ping" {
