@@ -119,3 +119,7 @@ func (s *LiveWssSDK) Close() {
 	// 这里可以添加清理逻辑，如关闭Redis连接等
 	// 目前主要依赖上下文取消机制
 }
+
+func (s *LiveWssSDK) GetRooms() map[string]*Room {
+	return s.roomManager.GetRooms()
+}

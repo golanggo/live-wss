@@ -592,7 +592,6 @@ func (v *Viewer) sendMessagesToWebSocket(messages [][]byte) {
 	for _, msg := range messages {
 		// 设置写超时
 		v.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-
 		err := v.Conn.WriteMessage(websocket.BinaryMessage, msg)
 		if err != nil {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
@@ -745,12 +744,9 @@ func (v *Viewer) StorePreviousSessionTime() {
 	if v.Room != nil && v.Room.dataSource != nil {
 		key := fmt.Sprintf(Live_WatchDuration, v.Room.firmUUID, v.Room.roomNumber, v.vid)
 		prevTimeStr, err := v.Room.dataSource.Get(v.roomCtx, key)
-		if err == nil && prevTimeStr != nil {
-			prevTimeStr, ok := prevTimeStr.(string)
-			if ok {
-				if prevTime, parseErr := strconv.ParseInt(prevTimeStr, 10, 64); parseErr == nil {
-					v.previousViewDuration = prevTime
-				}
+		if err == nil && len(prevTimeStr) > 0 {
+			if prevTime, parseErr := strconv.ParseInt(prevTimeStr, 10, 64); parseErr == nil {
+				v.previousViewDuration = prevTime
 			}
 		}
 	}

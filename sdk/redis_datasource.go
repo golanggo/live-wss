@@ -111,7 +111,7 @@ func (s *RedisDataSource) Store(ctx context.Context, key string, value any, dura
 }
 
 // Get 从Redis获取值
-func (s *RedisDataSource) Get(ctx context.Context, key string) (any, error) {
+func (s *RedisDataSource) Get(ctx context.Context, key string) (string, error) {
 	return s.rdbClient.Get(ctx, key).Result()
 }
 

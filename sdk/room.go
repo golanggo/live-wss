@@ -815,3 +815,7 @@ func (r *Room) SendSystemMessage(data []byte) {
 func (r *Room) GetRoomCtx() context.Context {
 	return r.roomCtx
 }
+
+func (r *Room) GetDataSource() DataSource {
+	return r.dataSource
+}

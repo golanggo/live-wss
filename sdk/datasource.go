@@ -23,7 +23,7 @@ type DataSource interface {
 	Store(ctx context.Context, key string, value any, duration time.Duration) error
 
 	// Get 从Redis获取值
-	Get(ctx context.Context, key string) (any, error)
+	Get(ctx context.Context, key string) (string, error)
 
 	AccumulatedBy(ctx context.Context, key string, value int64) error
 }

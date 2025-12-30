@@ -158,7 +158,7 @@ type RedisDataSourceAdapter struct {
 }
 
 // Get implements sdk.DataSource.
-func (r *RedisDataSourceAdapter) Get(ctx context.Context, key string) (any, error) {
+func (r *RedisDataSourceAdapter) Get(ctx context.Context, key string) (string, error) {
 	panic("unimplemented")
 }
 

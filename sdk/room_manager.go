@@ -87,3 +87,9 @@ func (m *RoomManager) Info() string {
 	}
 	return info
 }
+
+func (m *RoomManager) GetRooms() map[string]*Room {
+	m.roomRWLock.Lock()
+	defer m.roomRWLock.Unlock()
+	return m.Rooms
+}
