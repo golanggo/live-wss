@@ -388,6 +388,10 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 	if !exists || viewer == nil || viewer.sendRoomHasMessage.Load() != 1 {
 		return
 	}
+	isAnchor, ok := viewer.GetCustomData("IsAnchor")
+	if !ok {
+		isAnchor = false
+	}
 
 	rawMessages := viewer.CollectMessages()
 	for _, data := range rawMessages {
@@ -401,9 +405,10 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 		messagePb.SendClient = &SendClientInfoPb{
 			UserId:   viewer.GetViewerID(),
 			NickName: viewer.GetViewerName(),
+			IsAnchor: isAnchor.(bool),
 		}
 		messagePb.Priority = MessagePriority_LOW
-		messagePb.Timestamp = time.Now().UnixMilli()
+		messagePb.Timestamp = time.Now().Unix()
 		*batch = append(*batch, &messagePb)
 		// 更新房间接收统计
 		r.messageReceivedCnt.Add(1)
@@ -435,6 +440,10 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 		if count >= limit {
 			break
 		}
+		isAnchor, ok := viewer.GetCustomData("IsAnchor")
+		if !ok {
+			isAnchor = false
+		}
 
 		if viewer.sendRoomHasMessage.Load() == 1 {
 			rawMessages := viewer.CollectMessages()
@@ -451,9 +460,10 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 				messagePb.SendClient = &SendClientInfoPb{
 					UserId:   viewer.GetViewerID(),
 					NickName: viewer.GetViewerName(),
+					IsAnchor: isAnchor.(bool),
 				}
 				messagePb.Priority = MessagePriority_LOW
-				messagePb.Timestamp = time.Now().UnixMilli()
+				messagePb.Timestamp = time.Now().Unix()
 				*batch = append(*batch, &messagePb)
 				// 更新房间接收统计
 				r.messageReceivedCnt.Add(1)

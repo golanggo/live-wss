@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -201,6 +202,16 @@ func (h *StreamHandler) sendBatch(messages []*MessagePb) {
 		}
 	}
 
+	// 基础时长：7天 + 6小时
+	baseDuration := 7*24*time.Hour + 6*time.Hour
+	// 随机时长：0~6小时（6*3600秒 = 21600秒）
+	randDuration := time.Duration(rand.Intn(6*3600)) * time.Second
+	// 最终过期时间 = 基础时长 + 随机时长
+	totalExpireDuration := baseDuration + randDuration
+
+	// 设置Stream key过期时间
+	pipe.Expire(ctx, h.streamKey, totalExpireDuration)
+
 	results, err := pipe.Exec(ctx)
 	if err != nil {
 		fmt.Printf("[ERROR] 批量发送消息到Redis Stream失败: %v，房间=%s\n", err, h.roomNumber)
@@ -224,7 +235,7 @@ func (h *StreamHandler) runReceiver() {
 
 	// 创建消费组（如果不存在）
 	ctx := context.Background()
-	err = h.rdbClient.XGroupCreateMkStream(ctx, h.streamKey, groupName, "0-0").Err()
+	err = h.rdbClient.XGroupCreateMkStream(ctx, h.streamKey, groupName, "$").Err()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") {
 			// 消费组创建失败，回退到普通读取模式
@@ -290,8 +301,8 @@ func (h *StreamHandler) runReceiver() {
 			}
 			if messageCount > 0 {
 				// 追踪消息沈变过程 - 从 Redis 接收
-				fmt.Printf("[STAT] Redis接收: 房间=%s, 消息数=%d, ringBuf位置: write=%d, read=%d\n",
-					h.roomNumber, messageCount, h.messageWriteAt.Load(), h.messageReadAt.Load())
+				// fmt.Printf("[STAT] Redis接收: 房间=%s, 消息数=%d, ringBuf位置: write=%d, read=%d\n",
+				// 	h.roomNumber, messageCount, h.messageWriteAt.Load(), h.messageReadAt.Load())
 			}
 		}
 	}
@@ -320,14 +331,14 @@ func (h *StreamHandler) writeToMessageRingBuffer(msg *MessagePb) {
 	// 同时发送到channel以保持兼容性
 	select {
 	case h.messageChan <- msg:
-		fmt.Printf("成功将消息发送到messageChan: room=%s \n", h.roomNumber)
+		//fmt.Printf("成功将消息发送到messageChan: room=%s \n", h.roomNumber)
 	default:
 		// 通道满，记录警告但不阻塞
 		fmt.Printf("警告: Stream处理器消息通道已满，消息可能丢失 room=%s\n", h.roomNumber)
 	}
 
 	// 记录消息处理
-	fmt.Printf("房间 %s 处理消息 \n", h.roomNumber)
+	//fmt.Printf("房间 %s 处理消息 \n", h.roomNumber)
 }
 
 // getBatchSize 根据用户规模动态设置batch大小

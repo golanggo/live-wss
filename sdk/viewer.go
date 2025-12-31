@@ -577,7 +577,7 @@ func (v *Viewer) processNormalMessages() {
 		v.receivedMessageCnt.Add(int64(messageCount))
 
 		// 添加调试日志
-		fmt.Printf("观众 %s 处理了 %d 条普通消息，累计接收消息数: %d\n", v.vname, len(messages), v.receivedMessageCnt.Load())
+		//fmt.Printf("观众 %s 处理了 %d 条普通消息，累计接收消息数: %d\n", v.vname, len(messages), v.receivedMessageCnt.Load())
 
 		// 通过WebSocket发送消息
 		v.sendMessagesToWebSocket(messages)
