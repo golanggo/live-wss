@@ -40,6 +40,9 @@ type StreamHandler struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// 添加一个发送计数器，用于控制Expire操作频率
+	sendCounter atomic.Int64
 }
 
 // readFromRingBuffer - 从环形缓冲区读取消息
@@ -159,7 +162,7 @@ func (h *StreamHandler) sendToRingBuffer(msg *MessagePb) error {
 	h.sendRingBuf[writePos%bufferSize] = msg
 	h.sendWriteAt.Store(writePos + 1)
 
-	fmt.Printf("Redis数据源成功将消息发送到房间 %s 的发送缓冲区\n", h.roomNumber)
+	//fmt.Printf("Redis数据源成功将消息发送到房间 %s 的发送缓冲区\n", h.roomNumber)
 	return nil
 }
 
@@ -172,7 +175,7 @@ func (h *StreamHandler) sendBatch(messages []*MessagePb) {
 	// 增加上下文超时时间到10秒
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	fmt.Printf("[DEBUG] sendBatch: 准备发送 %d 条消息到Redis，房间=%s\n", len(messages), h.roomNumber)
+	//fmt.Printf("[DEBUG] sendBatch: 准备发送 %d 条消息到Redis，房间=%s\n", len(messages), h.roomNumber)
 
 	pipe := h.rdbClient.Pipeline()
 
@@ -191,27 +194,37 @@ func (h *StreamHandler) sendBatch(messages []*MessagePb) {
 				fmt.Printf("序列化消息失败: %v\n", err)
 				continue
 			}
+
+			// 对消息数据进行压缩
+			compressedData, err := CompressMessagePb(data)
+			if err != nil {
+				fmt.Printf("压缩消息失败: %v, 使用原始数据\n", err)
+				compressedData = data
+			}
 			// 统计发送到Redis的字节数
 			h.redisBytesSent.Add(int64(len(data)))
 			pipe.XAdd(ctx, &redis.XAddArgs{
 				Stream: h.streamKey,
-				Values: map[string]interface{}{"payload": string(data)},
+				Values: map[string]interface{}{"payload": string(compressedData)},
 				MaxLen: 100000, // 最多保留100000条消息
 				Approx: true,   // 近似修剪，性能更好
 			})
 		}
 	}
 
-	// 基础时长：7天 + 6小时
-	baseDuration := 7*24*time.Hour + 6*time.Hour
-	// 随机时长：0~6小时（6*3600秒 = 21600秒）
-	randDuration := time.Duration(rand.Intn(6*3600)) * time.Second
-	// 最终过期时间 = 基础时长 + 随机时长
-	totalExpireDuration := baseDuration + randDuration
+	// 使用计数器控制Expire操作频率，每20次发送才设置一次过期时间
+	sendCount := h.sendCounter.Add(1)
+	if sendCount%20 == 0 {
+		// 基础时长：7天 + 6小时
+		baseDuration := 7*24*time.Hour + 6*time.Hour
+		// 随机时长：0~6小时（6*3600秒 = 21600秒）
+		randDuration := time.Duration(rand.Intn(6*3600)) * time.Second
+		// 最终过期时间 = 基础时长 + 随机时长
+		totalExpireDuration := baseDuration + randDuration
 
-	// 设置Stream key过期时间
-	pipe.Expire(ctx, h.streamKey, totalExpireDuration)
-
+		// 设置Stream key过期时间
+		pipe.Expire(ctx, h.streamKey, totalExpireDuration)
+	}
 	results, err := pipe.Exec(ctx)
 	if err != nil {
 		fmt.Printf("[ERROR] 批量发送消息到Redis Stream失败: %v，房间=%s\n", err, h.roomNumber)
@@ -290,7 +303,16 @@ func (h *StreamHandler) runReceiver() {
 						// 统计从Redis接收的字节数
 						h.redisBytesRecv.Add(int64(len(data)))
 						var message MessagePb
-						if err := proto.Unmarshal([]byte(data), &message); err == nil {
+						compressedBytes := []byte(data)
+						// 尝试解压缩消息
+						decompressedData, err := DecompressMessagePb(compressedBytes)
+						if err != nil {
+							fmt.Printf("解压缩消息失败: %v, 尝试直接解析\n", err)
+							// 如果解压缩失败，尝试直接解析原始数据
+							decompressedData = compressedBytes
+						}
+
+						if err := proto.Unmarshal([]byte(decompressedData), &message); err == nil {
 							// 发送到消息环形缓冲区
 							h.writeToMessageRingBuffer(&message)
 						} else {
@@ -366,6 +388,8 @@ func (h *StreamHandler) getTickerDuration() time.Duration {
 
 	// 用户数越多，定时器间隔越短
 	switch {
+	case actualUsers <= 500:
+		return 200 * time.Millisecond
 	case actualUsers <= 10000:
 		return 50 * time.Millisecond
 	case actualUsers <= 20000:

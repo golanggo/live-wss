@@ -488,7 +488,7 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 // messageToDataSource 每100ms检查一次 ring buffer，将消息发送到数据源
 func (r *Room) messageToDataSource() {
 	//fmt.Printf("房间 %s messageToDataSource 协程开始运行\n", r.roomNumber)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	streamKey := fmt.Sprintf(Live_Msg_Broadcast, r.firmUUID, r.roomNumber)
 	for {
@@ -551,7 +551,7 @@ func (r *Room) readFromMessageRingBuffer() []*MessagePb {
 
 // 房间广播消息处理器
 func (r *Room) broadcastHandler() {
-	ticker := time.NewTicker(10 * time.Millisecond) // 增可不漑消恫速度，给观众更多时间处理
+	ticker := time.NewTicker(100 * time.Millisecond) //
 	defer ticker.Stop()
 	for {
 		select {

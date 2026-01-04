@@ -237,7 +237,7 @@ func (v *Viewer) StartMessageReader() {
 
 // Write 将用户的发送的数据写入一个环形缓冲区
 func (v *Viewer) Write(b []byte) {
-	log.Println("write", string(b))
+	//log.Println("write", string(b))
 	buf := make([]byte, len(b))
 	copy(buf, b)
 
@@ -378,7 +378,7 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 				return
 			}
 			messageStr := string(msgByte)
-			fmt.Print(messageStr)
+			//fmt.Print(messageStr)
 
 			// 检查是否为ping消息
 			if messageStr == "ping" {
@@ -479,7 +479,7 @@ func (v *Viewer) CollectMessages() [][]byte {
 // 观众消息读取器（由观众goroutine执行）
 func (v *Viewer) messageReader() {
 	// 定期检查是否有消息
-	ticker := time.NewTicker(1 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -538,7 +538,7 @@ func (v *Viewer) processHighPriorityMessages() {
 		// 发送高优先级消息到WebSocket
 		v.sendMessagesToWebSocket(messages)
 
-		fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.vname, len(messages))
+		//fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.vname, len(messages))
 	}
 
 	// 重置高优先级消息标志
