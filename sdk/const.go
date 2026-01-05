@@ -18,6 +18,7 @@ const (
 	Live_Msg_Broadcast     = "%v:own_live:%v:broadcast"               // 消息广播
 	Live_Msg_Broadcast_HP  = "%v:own_live:%v:broadcast:hp"            // 高优先级消息广播
 	Live_WatchDuration     = "%v:own_live:%v:watch_duration:%v"       // 进入直播观看时长
+	Live_Leave_User_Count  = "%v:own_live:%v:total_leave_count"       // 观看退出人数
 )
 
 const (

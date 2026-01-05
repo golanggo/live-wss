@@ -46,9 +46,7 @@ type Room struct {
 	//数据源
 	dataSource DataSource
 
-	inRoomViewerCnt        atomic.Uint32 // 进入房间人数
 	leaveRoomViewerCnt     atomic.Uint32 // 离开房间人数
-	lastInRoomViewerCnt    atomic.Uint32 // 上一次统计进入房间人数
 	lastLeaveRoomViewerCnt atomic.Uint32 // 上一次统计离开房间人数
 
 	onlineViewer       atomic.Uint32 // 实时在线人数
@@ -94,7 +92,6 @@ func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax ui
 	room.isOpenRoom.Store(true)
 
 	// 统计信息
-	room.lastInRoomViewerCnt.Store(0)
 	room.lastLeaveRoomViewerCnt.Store(0)
 	room.lastLikeCount.Store(0)
 	room.lastTotalViewerCnt.Store(0)
@@ -202,24 +199,19 @@ func (r *Room) storeSummaryToDataSource() {
 // 存储在线用户数
 func (r *Room) storeViewerCntToDataSource() {
 	// 原子读取当前值
-	currentInCnt := r.inRoomViewerCnt.Load()
 	currentLeaveCnt := r.leaveRoomViewerCnt.Load()
-	lastInCnt := r.lastInRoomViewerCnt.Load()
 	lastLeaveCnt := r.lastLeaveRoomViewerCnt.Load()
-
 	// 计算相对于上次的净变化（可以为正或负）
-	netChange := int64(currentInCnt-lastInCnt) - int64(currentLeaveCnt-lastLeaveCnt)
-
-	// 实时在线人数
+	netChange := int64(currentLeaveCnt - lastLeaveCnt)
+	// 离开房间人数
 	if netChange != 0 { // 只有净变化不为0时才更新
-		key := fmt.Sprintf(Live_Online_User_Count, r.firmUUID, r.roomNumber)
+		key := fmt.Sprintf(Live_Leave_User_Count, r.firmUUID, r.roomNumber)
 		err := r.dataSource.AccumulatedBy(r.roomCtx, key, netChange)
 		if err == nil {
 			// 更新记录的上一次值
-			r.lastInRoomViewerCnt.Store(currentInCnt)
 			r.lastLeaveRoomViewerCnt.Store(currentLeaveCnt)
 		} else {
-			fmt.Printf("存储净增加人数到Redis失败: %v, 房间: %s\n", err, r.roomNumber)
+			fmt.Printf("存储净增加离开人数到Redis失败: %v, 房间: %s\n", err, r.roomNumber)
 		}
 	}
 
@@ -310,7 +302,6 @@ func (r *Room) JoinRoom(viewer *Viewer) error {
 	// 更新在线人数和总人数
 	r.onlineViewer.Add(1)
 	r.totalViewer.Add(1)
-	r.inRoomViewerCnt.Add(1)
 
 	// 增强日志：记录用户加入房间
 	//fmt.Printf("room=%s %s 加入房间。\n", r.roomNumber, viewer.vname)
@@ -326,17 +317,16 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 	defer r.viewerMux.Unlock()
 
 	// 检查观众是否在房间中
-	if _, exists := r.viewers[viewer.vid]; !exists {
+	if _, exists := r.viewers[viewer.vid]; exists {
+		// 从观众列表中移除观众
+		viewer.Close()
+		delete(r.viewers, viewer.vid)
+	} else {
 		fmt.Printf("警告: 观众 %s 不在房间中，无法退出\n", viewer.vid)
-		return
 	}
 
 	// 记录当前在线人数
 	currentOnline := r.onlineViewer.Load()
-
-	// 从观众列表中移除观众
-	viewer.Close()
-	delete(r.viewers, viewer.vid)
 
 	// 更新在线人数
 	// 减1：利用无符号整数溢出特性，^uint32(0) 等于最大无符号32位整数，加后溢出即为减1
@@ -344,7 +334,6 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 		r.onlineViewer.Add(^uint32(0))
 		r.leaveRoomViewerCnt.Add(1)
 	} else {
-		r.lastInRoomViewerCnt.Store(0)
 		r.lastLeaveRoomViewerCnt.Store(0)
 		r.lastLikeCount.Store(0)
 		r.lastTotalViewerCnt.Store(0)
