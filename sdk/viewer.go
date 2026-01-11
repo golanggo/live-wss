@@ -226,7 +226,7 @@ func (v *Viewer) Start() {
 	go v.messageReader()
 
 	//定时发送Ping消息，检测连接是否断开
-	go v.Ping(30 * time.Second)
+	//go v.Ping(30 * time.Second)
 
 }
 
@@ -536,7 +536,7 @@ func (v *Viewer) processHighPriorityMessages() {
 		v.receivedMessageCnt.Add(messageCount)
 
 		// 发送高优先级消息到WebSocket
-		v.sendMessagesToWebSocket(messages)
+		v.SendMessagesToWebSocket(messages)
 
 		//fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.vname, len(messages))
 	}
@@ -580,7 +580,7 @@ func (v *Viewer) processNormalMessages() {
 		//fmt.Printf("观众 %s 处理了 %d 条普通消息，累计接收消息数: %d\n", v.vname, len(messages), v.receivedMessageCnt.Load())
 
 		// 通过WebSocket发送消息
-		v.sendMessagesToWebSocket(messages)
+		v.SendMessagesToWebSocket(messages)
 	}
 
 	// 重置消息标志
@@ -588,26 +588,46 @@ func (v *Viewer) processNormalMessages() {
 }
 
 // 通过WebSocket发送消息
-func (v *Viewer) sendMessagesToWebSocket(messages [][]byte) {
+func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
+	if v == nil {
+		log.Printf("Viewer instance is nil, skip sending messages")
+		return
+	}
+	// 增加 recover 捕获 panic，防止程序崩溃
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic when sending messages to viewer %s: %v", v.vid, r)
+		}
+	}()
+
+	if len(messages) == 0 {
+		return
+	}
+
 	// 使用专用锁确保 WebSocket 写入串行化，解决并发安全问题
 	v.wsWriteMu.Lock()
 	defer v.wsWriteMu.Unlock()
 
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
 	if v.Conn == nil {
+		log.Printf("WebSocket conn is nil for viewer %s, skip send messages", v.vid)
 		return
 	}
-
+	// 设置写超时
+	if err := v.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		log.Printf("Failed to set write deadline for viewer %s: %v", v.vid, err)
+		return
+	}
 	// 发送消息
 	for _, msg := range messages {
-		// 设置写超时
-		v.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		// 跳过空消息，避免无效写入
+		if len(msg) == 0 {
+			continue
+		}
+
 		err := v.Conn.WriteMessage(websocket.BinaryMessage, msg)
 		if err != nil {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
-			return
+			continue
 		}
 		// 增加接收字节数统计
 		v.receivedBytesCnt.Add(int64(len(msg)))
