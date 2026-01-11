@@ -530,6 +530,8 @@ func (v *Viewer) processHighPriorityMessages() {
 
 	// 更新读位置
 	v.highPriorityReadAt.Store(readPos)
+	// 重置高优先级消息标志
+	v.hasHighPriorityMsg.Store(0)
 
 	if len(messages) > 0 {
 		// 增加接收消息计数
@@ -541,8 +543,6 @@ func (v *Viewer) processHighPriorityMessages() {
 		//fmt.Printf("观众 %s 处理了 %d 条高优先级消息\n", v.vname, len(messages))
 	}
 
-	// 重置高优先级消息标志
-	v.hasHighPriorityMsg.Store(0)
 }
 
 // 处理普通消息
@@ -617,6 +617,7 @@ func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
 		log.Printf("Failed to set write deadline for viewer %s: %v", v.vid, err)
 		return
 	}
+
 	// 发送消息
 	for _, msg := range messages {
 		// 跳过空消息，避免无效写入
@@ -629,6 +630,7 @@ func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
 			continue
 		}
+
 		// 增加接收字节数统计
 		v.receivedBytesCnt.Add(int64(len(msg)))
 		// 更新最后活跃时间
