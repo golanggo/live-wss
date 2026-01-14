@@ -83,7 +83,7 @@ func (f *DefaultMessageFilter) ShouldAllowMessage(msg *MessagePb, limit int64) (
 				return true, modifiedMsg, nil
 			case MessageFilterAction_Limit:
 				ok := rand.Int63n(limit) == 0
-				fmt.Println("MessageFilterAction_Limit,ok:", ok)
+				//fmt.Println("MessageFilterAction_Limit,ok:", ok)
 				return ok, modifiedMsg, nil
 			case MessageFilterAction_Modify:
 				// Create a copy of the message and modify it
