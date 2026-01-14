@@ -864,6 +864,7 @@ func (r *Room) GetMessageFilter() MessageFilter {
 
 // 添加消息过滤规则
 func (r *Room) AddFilterRule(pattern string, action int, replacement string, priority int, limit int64) error {
+	log.Printf("%v 添加消息过滤规则: %s, %d, %s, %d, %d\n", r.GetRoomNumber(), pattern, action, replacement, priority, limit)
 	if r.messageFilter == nil {
 		r.messageFilter = NewDefaultMessageFilter()
 		r.filterEnabled.Store(true)
