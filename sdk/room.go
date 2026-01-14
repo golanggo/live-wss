@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,6 +56,11 @@ type Room struct {
 
 	likeCount     atomic.Uint32 // 点赞数
 	lastLikeCount atomic.Uint32 // 上一次统计点赞数
+
+	// Message filtering
+	messageFilter      MessageFilter
+	filterEnabled      atomic.Bool  // Whether filtering is enabled
+	messageFilterLimit atomic.Int64 // 匹配消息限制数量，默认10，则保留十分之一消息
 }
 
 func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax uint32, firmUUID string) (*Room, error) {
@@ -87,6 +93,7 @@ func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax ui
 	// 初始化 ring buffer 位置
 	room.viewerSendWritePos.Store(0)
 	room.viewerSendReadPos.Store(0)
+	room.messageFilterLimit.Store(10)
 
 	// 设置房间状态为直播中
 	room.isOpenRoom.Store(true)
@@ -398,7 +405,15 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 		}
 		messagePb.Priority = MessagePriority_LOW
 		messagePb.Timestamp = time.Now().Unix()
-		*batch = append(*batch, &messagePb)
+
+		// Apply message filtering here
+		filteredMsg, allowed := r.ApplyMessageFilter(&messagePb, r.messageFilterLimit.Load())
+		if !allowed {
+			// Skip this message as it was blocked by filter
+			continue
+		}
+
+		*batch = append(*batch, filteredMsg)
 		// 更新房间接收统计
 		r.messageReceivedCnt.Add(1)
 		r.bytesReceivedCnt.Add(int64(len(data)))
@@ -453,7 +468,14 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 				}
 				messagePb.Priority = MessagePriority_LOW
 				messagePb.Timestamp = time.Now().Unix()
-				*batch = append(*batch, &messagePb)
+				// Apply message filtering here
+				filteredMsg, allowed := r.ApplyMessageFilter(&messagePb, r.messageFilterLimit.Load())
+				if !allowed {
+					// Skip this message as it was blocked by filter
+					continue
+				}
+
+				*batch = append(*batch, filteredMsg)
 				// 更新房间接收统计
 				r.messageReceivedCnt.Add(1)
 				r.bytesReceivedCnt.Add(int64(len(data)))
@@ -827,4 +849,55 @@ func (r *Room) GetRoomCtx() context.Context {
 
 func (r *Room) GetDataSource() DataSource {
 	return r.dataSource
+}
+
+// 房间设置消息过滤器
+func (r *Room) SetMessageFilter(filter MessageFilter) {
+	r.messageFilter = filter
+	r.filterEnabled.Store(filter != nil)
+}
+
+// 获取房间消息过滤器
+func (r *Room) GetMessageFilter() MessageFilter {
+	return r.messageFilter
+}
+
+// 添加消息过滤规则
+func (r *Room) AddFilterRule(pattern string, action int, replacement string, priority int, limit int64) error {
+	if r.messageFilter == nil {
+		r.messageFilter = NewDefaultMessageFilter()
+		r.filterEnabled.Store(true)
+		r.messageFilterLimit.Store(limit)
+	}
+
+	compiledPattern, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	rule := &MessageFilterRule{
+		ID:          fmt.Sprintf("rule_%d_%s", time.Now().UnixNano(), pattern[:min(10, len(pattern))]),
+		Pattern:     compiledPattern,
+		Action:      action,
+		Replacement: replacement,
+		Priority:    priority,
+		Limit:       limit,
+	}
+
+	return r.messageFilter.AddRule(rule)
+}
+
+// 检查消息是否符合过滤规则
+func (r *Room) ApplyMessageFilter(msg *MessagePb, limit int64) (*MessagePb, bool) {
+	if !r.filterEnabled.Load() || r.messageFilter == nil {
+		return msg, true // Allow all messages if filter is disabled
+	}
+
+	allow, filteredMsg, err := r.messageFilter.ShouldAllowMessage(msg, limit)
+	if err != nil {
+		log.Printf("Error applying message filter: %v", err)
+		return msg, true
+	}
+
+	return filteredMsg, allow
 }
