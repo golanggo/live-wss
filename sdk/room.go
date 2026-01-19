@@ -25,10 +25,11 @@ type Room struct {
 	maxViewer uint32 // 房间最大容容纳人数
 
 	// 消息和字节数统计
-	messageSentCnt     atomic.Int64 // 房间发送的消息数
-	messageReceivedCnt atomic.Int64 // 房间接收的消息数
-	bytesSentCnt       atomic.Int64 // 房间发送的字节数
-	bytesReceivedCnt   atomic.Int64 // 房间接收的字节数
+	messageSentCnt         atomic.Int64 // 房间发送的消息数
+	messageReceivedCnt     atomic.Int64 // 房间接收的消息数
+	bytesSentCnt           atomic.Int64 // 房间发送的字节数
+	bytesReceivedCnt       atomic.Int64 // 房间接收的字节数
+	lastMessageReceivedCnt atomic.Int64 // 上一次统计房间接收的消息数
 
 	viewers   map[string]*Viewer // 观众列表（如果需要跟踪具体观众）
 	viewerMux sync.RWMutex       // 保护 viewerList 的互斥锁
@@ -199,6 +200,9 @@ func (r *Room) storeSummaryToDataSource() {
 
 			// 存储用户时长
 			r.storeViewerDurationsToDataSource()
+
+			// 存储评论数
+			r.storeMessageCountToDataSource()
 		}
 	}
 }
@@ -272,6 +276,24 @@ func (r *Room) storeViewerDurationsToDataSource() {
 			if err != nil {
 				fmt.Printf("存储用户时长到Redis失败: %v, 用户: %s, 房间: %s\n", err, viewerID, r.roomNumber)
 			}
+		}
+	}
+}
+
+// 存储评论数到Redis
+func (r *Room) storeMessageCountToDataSource() {
+	// 累计评论数
+	currentMsgCount := r.messageReceivedCnt.Load()
+	lastMsgCount := r.lastMessageReceivedCnt.Load()
+	netChangeMsgCount := int64(currentMsgCount - lastMsgCount)
+	if netChangeMsgCount != 0 {
+		key := fmt.Sprintf(Live_Comment_Count, r.firmUUID, r.roomNumber)
+		err := r.dataSource.AccumulatedBy(r.roomCtx, key, netChangeMsgCount)
+		if err == nil {
+			// 存储成功，更新记录的上一次值
+			r.lastMessageReceivedCnt.Store(currentMsgCount)
+		} else {
+			fmt.Printf("【ERROR】存储评论数到Redis失败: %v\n, 房间: %s\n", err, r.roomNumber)
 		}
 	}
 }
