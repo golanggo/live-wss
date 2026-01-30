@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 type ViewerID string
@@ -624,8 +625,18 @@ func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
 		if len(msg) == 0 {
 			continue
 		}
+		// 没有被禁言或封禁，则跳过
+		var pbMsg MessagePb
+		err := proto.Unmarshal(msg, &pbMsg)
+		if err == nil {
+			if (pbMsg.Code == Code_Event_Anchor_Mute ||
+				pbMsg.Code == Code_Event_Anchor_Ban ||
+				pbMsg.Code == Code_Event_Anchor_UnMute) && pbMsg.Data != v.vid {
+				continue
+			}
+		}
 
-		err := v.Conn.WriteMessage(websocket.BinaryMessage, msg)
+		err = v.Conn.WriteMessage(websocket.BinaryMessage, msg)
 		if err != nil {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
 			continue
