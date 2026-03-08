@@ -70,30 +70,33 @@ func (f *DefaultMessageFilter) GetRules() []*MessageFilterRule {
 func (f *DefaultMessageFilter) ShouldAllowMessage(msg *MessagePb, limit int64) (bool, *MessagePb, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-
 	modifiedMsg := msg
-
 	for _, rule := range f.rules {
-		// Check if the message content matches the pattern
-		if rule.Pattern.MatchString(msg.Data) {
-			switch rule.Action {
-			case MessageFilterAction_Block:
+		switch rule.Action {
+		case MessageFilterAction_Block:
+			if rule.Pattern.MatchString(msg.Data) {
 				return false, nil, nil
-			case MessageFilterAction_Allow:
+			}
+		case MessageFilterAction_Allow:
+			if rule.Pattern.MatchString(msg.Data) {
 				return true, modifiedMsg, nil
-			case MessageFilterAction_Limit:
+			}
+		case MessageFilterAction_Limit:
+			if rule.Pattern.MatchString(msg.Data) {
 				ok := rand.Int63n(limit) == 0
-				//fmt.Println("MessageFilterAction_Limit,ok:", ok)
 				return ok, modifiedMsg, nil
-			case MessageFilterAction_Modify:
-				// Create a copy of the message and modify it
+			}
+		case MessageFilterAction_Modify:
+			if rule.Pattern.MatchString(msg.Data) {
 				newMsg := proto.Clone(msg).(*MessagePb)
 				newMsg.Data = rule.Pattern.ReplaceAllString(msg.Data, rule.Replacement)
 				modifiedMsg = newMsg
 			}
+		case MessageFilterAction_Rate_Limit:
+			ok := rand.Int63n(limit) == 0
+			return ok, modifiedMsg, nil
 		}
 	}
 
-	// If no rules matched or only allow/modify rules applied, allow the message
 	return true, modifiedMsg, nil
 }

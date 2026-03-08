@@ -3,10 +3,11 @@ package sdk
 import "regexp"
 
 const (
-	MessageFilterAction_Block  = iota // 消息不允许发送
-	MessageFilterAction_Allow         // 消息允许发送
-	MessageFilterAction_Modify        // 修改消息
-	MessageFilterAction_Limit         // 限制消息数量
+	MessageFilterAction_Block      = iota // 消息不允许发送
+	MessageFilterAction_Allow             // 消息允许发送
+	MessageFilterAction_Modify            // 修改消息
+	MessageFilterAction_Limit             // 匹配消息限制消息数量
+	MessageFilterAction_Rate_Limit        // 限流消息数量
 )
 
 type MessageFilterRule struct {
