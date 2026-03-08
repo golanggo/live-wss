@@ -890,8 +890,8 @@ func (r *Room) AddFilterRule(pattern string, action int, replacement string, pri
 	if r.messageFilter == nil {
 		r.messageFilter = NewDefaultMessageFilter()
 		r.filterEnabled.Store(true)
-		r.messageFilterLimit.Store(limit)
 	}
+	r.messageFilterLimit.Store(limit)
 
 	compiledPattern, err := regexp.Compile(pattern)
 	if err != nil {
