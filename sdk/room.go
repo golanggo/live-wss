@@ -52,8 +52,8 @@ type Room struct {
 	lastLeaveRoomViewerCnt atomic.Uint32 // 上一次统计离开房间人数
 
 	onlineViewer       atomic.Uint32 // 实时在线人数
-	totalViewer        atomic.Uint32 // 总观看人数
-	lastTotalViewerCnt atomic.Uint32 // 上一次统计总观看人数
+	totalViewer        atomic.Uint32 // 总观看人次
+	lastTotalViewerCnt atomic.Uint32 // 上一次统计总观看人次
 
 	likeCount     atomic.Uint32 // 点赞数
 	lastLikeCount atomic.Uint32 // 上一次统计点赞数

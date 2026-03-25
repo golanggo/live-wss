@@ -126,6 +126,8 @@ type Viewer struct {
 
 	// WebSocket写入专用锁，确保并发安全
 	wsWriteMu sync.Mutex
+
+	onLeaveCallback func(viewer *Viewer)
 }
 
 type item struct {
@@ -365,6 +367,9 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 		select {
 		case <-v.viewerCtx.Done():
 			log.Println("viewer context done")
+			if v.Room != nil {
+				v.Room.LeaveRoom(v)
+			}
 			return
 		case <-v.roomCtx.Done():
 			log.Println("room context done")
@@ -695,6 +700,11 @@ func (v *Viewer) Close() {
 		v.Conn.Close()
 	}
 
+	// 业务回调
+	if v.onLeaveCallback != nil {
+		go v.onLeaveCallback(v)
+	}
+
 }
 
 // UpdateActiveTime 更新最后活跃时间
@@ -795,4 +805,9 @@ func (v *Viewer) StorePreviousSessionTime() {
 			}
 		}
 	}
+}
+
+// SetOnLeaveCallback 设置退出回调
+func (v *Viewer) SetOnLeaveCallback(callback func(viewer *Viewer)) {
+	v.onLeaveCallback = callback
 }

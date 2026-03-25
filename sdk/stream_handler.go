@@ -307,7 +307,7 @@ func (h *StreamHandler) runReceiver() {
 						// 尝试解压缩消息
 						decompressedData, err := DecompressMessagePb(compressedBytes)
 						if err != nil {
-							fmt.Printf("解压缩消息失败: %v, 尝试直接解析\n", err)
+							//fmt.Printf("解压缩消息失败: %v, 尝试直接解析\n", err)
 							// 如果解压缩失败，尝试直接解析原始数据
 							decompressedData = compressedBytes
 						}

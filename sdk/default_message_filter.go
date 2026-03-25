@@ -6,7 +6,6 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/goravel/framework/facades"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -84,7 +83,6 @@ func (f *DefaultMessageFilter) ShouldAllowMessage(msg *MessagePb, limit int64) (
 			}
 		case MessageFilterAction_Rate_Limit:
 			ok := rand.Int63n(limit) == 0
-			facades.Log().Infof("Rate limit triggered,ok:%v, limit:%v", ok, limit)
 			return ok, modifiedMsg, nil
 		case MessageFilterAction_Limit:
 			if rule.Pattern.MatchString(msg.Data) {
