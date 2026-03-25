@@ -127,7 +127,9 @@ type Viewer struct {
 	// WebSocket写入专用锁，确保并发安全
 	wsWriteMu sync.Mutex
 
-	onLeaveCallback func(viewer *Viewer)
+	onLeaveCallback      func(viewer *Viewer) // 用户退出回调
+	watchDurationStarted atomic.Bool          // 是否开始累计时长
+	liveStartedAt        atomic.Int64         // 直播开始时间戳
 }
 
 type item struct {
@@ -388,17 +390,21 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 
 			// 检查是否为ping消息
 			if messageStr == "ping" {
-				v.accumulatedViewDuration.Add(3000)
+				if v.watchDurationStarted.Load() {
+					v.accumulatedViewDuration.Add(3000)
+					v.UpdateActiveTime()
+				}
 				v.UpdateActiveTime()
 				continue
 			}
 			// 处理时长累计心跳
 			if strings.HasPrefix(messageStr, "ping_") {
-				// 提取毫秒数
-				msStr := strings.TrimPrefix(messageStr, "ping_")
-				if ms, err := strconv.Atoi(msStr); err == nil && ms > 0 {
-					v.accumulatedViewDuration.Add(int64(ms))
-					v.UpdateActiveTime()
+				if v.watchDurationStarted.Load() {
+					msStr := strings.TrimPrefix(messageStr, "ping_")
+					if ms, err := strconv.Atoi(msStr); err == nil && ms > 0 {
+						v.accumulatedViewDuration.Add(int64(ms))
+						v.UpdateActiveTime()
+					}
 				}
 				continue
 			}
@@ -639,6 +645,10 @@ func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
 				pbMsg.Code == Code_Event_Anchor_UnMute) && pbMsg.Data != v.vid {
 				continue
 			}
+			if pbMsg.Code == Code_Event_Anchor_Start_Live {
+				// 直播开始，启用时长累计
+				v.StartWatchDuration()
+			}
 		}
 
 		err = v.Conn.WriteMessage(websocket.BinaryMessage, msg)
@@ -810,4 +820,20 @@ func (v *Viewer) StorePreviousSessionTime() {
 // SetOnLeaveCallback 设置退出回调
 func (v *Viewer) SetOnLeaveCallback(callback func(viewer *Viewer)) {
 	v.onLeaveCallback = callback
+}
+
+// StartWatchDuration 开始累计观看时长
+func (v *Viewer) StartWatchDuration() {
+	v.watchDurationStarted.Store(true)
+	v.liveStartedAt.Store(time.Now().Unix())
+}
+
+// IsWatchDurationStarted 检查是否已开始累计时长
+func (v *Viewer) IsWatchDurationStarted() bool {
+	return v.watchDurationStarted.Load()
+}
+
+// GetLiveStartedAt 获取直播开始时间
+func (v *Viewer) GetLiveStartedAt() int64 {
+	return v.liveStartedAt.Load()
 }

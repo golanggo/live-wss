@@ -22,10 +22,11 @@ const (
 )
 
 const (
-	Code_Event_User_Click_Like = "event_user_click_like" // 用户点赞
-	Code_Event_Anchor_Mute     = "event_anchor_mute"     // 主播禁言用户
-	Code_Event_Anchor_UnMute   = "event_anchor_unmute"   // 主播解禁禁言用户
-	Code_Event_Anchor_Ban      = "event_anchor_ban"      // 主播封禁用户
+	Code_Event_User_Click_Like   = "event_user_click_like"   // 用户点赞
+	Code_Event_Anchor_Mute       = "event_anchor_mute"       // 主播禁言用户
+	Code_Event_Anchor_UnMute     = "event_anchor_unmute"     // 主播解禁禁言用户
+	Code_Event_Anchor_Ban        = "event_anchor_ban"        // 主播封禁用户
+	Code_Event_Anchor_Start_Live = "event_anchor_start_live" // 主播开启直播间
 )
 
 // 连接监控和清理配置常量

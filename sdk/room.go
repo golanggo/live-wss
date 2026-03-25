@@ -269,7 +269,6 @@ func (r *Room) storeViewerDurationsToDataSource() {
 		// 计算时长键
 		key := fmt.Sprintf(Live_WatchDuration, r.firmUUID, r.roomNumber, viewerID)
 		totalDuration := viewer.GetTotalWatchTime()
-
 		// 存储到Redis
 		if r.dataSource != nil {
 			err := r.dataSource.Store(r.roomCtx, key, totalDuration, 36*time.Hour)
@@ -437,13 +436,13 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 
 		*batch = append(*batch, filteredMsg)
 		// 更新房间接收统计
-		r.messageReceivedCnt.Add(1)
 		r.bytesReceivedCnt.Add(int64(len(data)))
 		// 点赞
 		if messagePb.Code == Code_Event_User_Click_Like {
 			r.likeCount.Add(1)
 			continue
 		}
+		r.messageReceivedCnt.Add(1)
 	}
 
 	// 批次达到一定大小就发送，避免频繁发送
@@ -499,13 +498,13 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 
 				*batch = append(*batch, filteredMsg)
 				// 更新房间接收统计
-				r.messageReceivedCnt.Add(1)
 				r.bytesReceivedCnt.Add(int64(len(data)))
 				// 点赞
 				if messagePb.Code == Code_Event_User_Click_Like {
 					r.likeCount.Add(1)
 					continue
 				}
+				r.messageReceivedCnt.Add(1)
 			}
 			count++
 		}
