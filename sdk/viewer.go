@@ -114,7 +114,7 @@ type Viewer struct {
 	lastPingTime   time.Time // 最后Ping时间
 
 	accumulatedViewDuration atomic.Int64 // 当前会话累计时长（秒）
-	previousViewDuration    int64        // 之前累计的时长（从Redis获取）
+	previousViewDuration    atomic.Int64 // 之前累计的时长（从Redis获取）
 	lastUpdateTime          time.Time    // 上次更新Redis时间
 
 	// 消息计数
@@ -222,7 +222,7 @@ func (v *Viewer) GetUserInfo() ViewerInfo {
 
 func (v *Viewer) Start() {
 	// 存储之前会话时长
-	go v.StorePreviousSessionTime()
+	v.StorePreviousSessionTime()
 
 	// 网络->slots->房间
 	go v.ReadMessageWebSocketLoop()
@@ -795,7 +795,7 @@ func (v *Viewer) PrintViewerInfo() {
 
 // GetTotalWatchTime 获取用户总观看时长（包括之前累计的）
 func (v *Viewer) GetTotalWatchTime() int64 {
-	return v.previousViewDuration + v.accumulatedViewDuration.Load()
+	return v.previousViewDuration.Load() + v.accumulatedViewDuration.Load()
 }
 
 // GetCurrentSessionTime 获取当前会话观看时长
@@ -811,7 +811,8 @@ func (v *Viewer) StorePreviousSessionTime() {
 		prevTimeStr, err := v.Room.dataSource.Get(v.roomCtx, key)
 		if err == nil && len(prevTimeStr) > 0 {
 			if prevTime, parseErr := strconv.ParseInt(prevTimeStr, 10, 64); parseErr == nil {
-				v.previousViewDuration = prevTime
+				v.previousViewDuration.Store(prevTime)
+				log.Printf("时长：%v", prevTime)
 			}
 		}
 	}

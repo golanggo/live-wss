@@ -184,7 +184,7 @@ func (r *Room) Start(dataSource DataSource) {
 // 存储统计数据到Redis的协程
 func (r *Room) storeSummaryToDataSource() {
 	fmt.Printf("房间 %s storeSummaryToDataSource 协程开始运行\n", r.roomNumber)
-	ticker := time.NewTicker(12 * time.Second)
+	ticker := time.NewTicker(6 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -207,7 +207,7 @@ func (r *Room) storeSummaryToDataSource() {
 	}
 }
 
-// 存储在线用户数
+// 存储累计观看用户数和累计离开直播间用户数
 func (r *Room) storeViewerCntToDataSource() {
 	// 原子读取当前值
 	currentLeaveCnt := r.leaveRoomViewerCnt.Load()
@@ -360,12 +360,13 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 	// 减1：利用无符号整数溢出特性，^uint32(0) 等于最大无符号32位整数，加后溢出即为减1
 	if currentOnline > 0 {
 		r.onlineViewer.Add(^uint32(0))
-		r.leaveRoomViewerCnt.Add(1)
-	} else {
-		r.lastLeaveRoomViewerCnt.Store(0)
-		r.lastLikeCount.Store(0)
-		r.lastTotalViewerCnt.Store(0)
 	}
+	r.leaveRoomViewerCnt.Add(1)
+	// else {
+	// 	r.lastLeaveRoomViewerCnt.Store(0)
+	// 	r.lastLikeCount.Store(0)
+	// 	r.lastTotalViewerCnt.Store(0)
+	// }
 
 	// 增强日志：记录用户离开房间
 	// fmt.Printf("【Room.LeaveRoom】room=%s viewerID=%s name=%s left room, current online: %d, previous online: %d\n",
