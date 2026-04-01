@@ -410,6 +410,10 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 	if !ok {
 		isAnchor = false
 	}
+	userTags, ok := viewer.GetCustomData("UserTags")
+	if !ok {
+		userTags = ""
+	}
 
 	rawMessages := viewer.CollectMessages()
 	for _, data := range rawMessages {
@@ -424,6 +428,7 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 			UserId:   viewer.GetViewerID(),
 			NickName: viewer.GetViewerName(),
 			IsAnchor: isAnchor.(bool),
+			UserTags: userTags.(string),
 		}
 		messagePb.Priority = MessagePriority_LOW
 		messagePb.Timestamp = time.Now().Unix()
