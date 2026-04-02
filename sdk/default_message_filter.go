@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 
+	"github.com/kirklin/go-swd"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -90,13 +92,49 @@ func (f *DefaultMessageFilter) ShouldAllowMessage(msg *MessagePb, limit int64) (
 				return ok, modifiedMsg, nil
 			}
 		case MessageFilterAction_Modify:
-			if rule.Pattern.MatchString(msg.Data) {
+			maskedData, isTriggered := SensitiveMask(msg.Data)
+			if isTriggered {
 				newMsg := proto.Clone(msg).(*MessagePb)
-				newMsg.Data = rule.Pattern.ReplaceAllString(msg.Data, rule.Replacement)
+				newMsg.Data = maskedData
 				modifiedMsg = newMsg
+				return true, modifiedMsg, nil
 			}
 		}
 	}
 
 	return true, modifiedMsg, nil
+}
+
+func SensitiveMask(text string) (string, bool) {
+	// 创建实例
+	isTrigerSwd := false
+	detector, err := swd.New()
+	if err != nil {
+		return text, isTrigerSwd
+	}
+
+	// 添加自定义敏感词
+	customWords := map[string]swd.Category{
+		"涉黄":    swd.Pornography,
+		"涉政":    swd.Political,
+		"赌博词汇":  swd.Gambling,
+		"毒品词汇":  swd.Drugs,
+		"脏话词汇":  swd.Profanity,
+		"歧视词汇":  swd.Discrimination,
+		"诈骗词汇":  swd.Scam,
+		"自定义词汇": swd.Custom,
+	}
+	if err := detector.AddWords(customWords); err != nil {
+		return text, isTrigerSwd
+	}
+	words := detector.MatchAll(text)
+	for _, word := range words {
+		chars := make([]rune, len([]rune(word.Word)))
+		for i := range chars {
+			chars[i] = '*'
+		}
+		text = strings.Replace(text, word.Word, string(chars), -1)
+		isTrigerSwd = true
+	}
+	return text, isTrigerSwd
 }
