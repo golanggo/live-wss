@@ -11,6 +11,47 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// 全局敏感词检测器单例
+var (
+	sensitiveDetector     *swd.SWD
+	sensitiveDetectorOnce sync.Once
+	sensitiveDetectorErr  error
+)
+
+// initSensitiveDetector 初始化敏感词检测器（只执行一次）
+func initSensitiveDetector() {
+	detector, err := swd.New()
+	if err != nil {
+		sensitiveDetectorErr = err
+		return
+	}
+
+	// 添加自定义敏感词
+	customWords := map[string]swd.Category{
+		"涉黄":    swd.Pornography,
+		"涉政":    swd.Political,
+		"赌博词汇":  swd.Gambling,
+		"毒品词汇":  swd.Drugs,
+		"脏话词汇":  swd.Profanity,
+		"歧视词汇":  swd.Discrimination,
+		"诈骗词汇":  swd.Scam,
+		"自定义词汇": swd.Custom,
+	}
+
+	if err := detector.AddWords(customWords); err != nil {
+		sensitiveDetectorErr = err
+		return
+	}
+
+	sensitiveDetector = detector
+}
+
+// getSensitiveDetector 获取敏感词检测器（线程安全）
+func getSensitiveDetector() (*swd.SWD, error) {
+	sensitiveDetectorOnce.Do(initSensitiveDetector)
+	return sensitiveDetector, sensitiveDetectorErr
+}
+
 // DefaultMessageFilter implements basic regex-based filtering
 type DefaultMessageFilter struct {
 	rules []*MessageFilterRule
@@ -106,25 +147,9 @@ func (f *DefaultMessageFilter) ShouldAllowMessage(msg *MessagePb, limit int64) (
 }
 
 func SensitiveMask(text string) (string, bool) {
-	// 创建实例
 	isTrigerSwd := false
-	detector, err := swd.New()
-	if err != nil {
-		return text, isTrigerSwd
-	}
-
-	// 添加自定义敏感词
-	customWords := map[string]swd.Category{
-		"涉黄":    swd.Pornography,
-		"涉政":    swd.Political,
-		"赌博词汇":  swd.Gambling,
-		"毒品词汇":  swd.Drugs,
-		"脏话词汇":  swd.Profanity,
-		"歧视词汇":  swd.Discrimination,
-		"诈骗词汇":  swd.Scam,
-		"自定义词汇": swd.Custom,
-	}
-	if err := detector.AddWords(customWords); err != nil {
+	detector, err := getSensitiveDetector()
+	if err != nil || detector == nil {
 		return text, isTrigerSwd
 	}
 	words := detector.MatchAll(text)
@@ -136,5 +161,24 @@ func SensitiveMask(text string) (string, bool) {
 		text = strings.Replace(text, word.Word, string(chars), -1)
 		isTrigerSwd = true
 	}
+
 	return text, isTrigerSwd
+}
+
+// 支持动态添加敏感词
+func AddSensitiveWords(words map[string]swd.Category) error {
+	detector, err := getSensitiveDetector()
+	if err != nil || detector == nil {
+		return err
+	}
+	return detector.AddWords(words)
+}
+
+// 获取检测器状态（用于健康检查）
+func GetSensitiveDetectorStatus() (bool, error) {
+	detector, err := getSensitiveDetector()
+	if err != nil {
+		return false, err
+	}
+	return detector != nil, nil
 }
