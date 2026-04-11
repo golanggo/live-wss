@@ -125,7 +125,7 @@ func (f *DefaultMessageFilter) ShouldAllowMessage(msg *MessagePb, limit int64) (
 				return true, modifiedMsg, nil
 			}
 		case MessageFilterAction_Rate_Limit:
-			ok := rand.Int63n(limit) == 0
+			ok := rand.Int63n(100) < limit
 			return ok, modifiedMsg, nil
 		case MessageFilterAction_Limit:
 			if rule.Pattern.MatchString(msg.Data) {
