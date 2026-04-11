@@ -589,7 +589,7 @@ func (r *Room) readFromMessageRingBuffer() []*MessagePb {
 
 // 房间广播消息处理器
 func (r *Room) broadcastHandler() {
-	ticker := time.NewTicker(100 * time.Millisecond) //
+	ticker := time.NewTicker(300 * time.Millisecond) // 每300ms检查一次数据源是否有新消息需要广播
 	defer ticker.Stop()
 	for {
 		select {

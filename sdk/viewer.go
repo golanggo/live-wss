@@ -567,24 +567,30 @@ func (v *Viewer) processNormalMessages() {
 		v.hasMessage.Store(0)
 		return
 	}
+	// 【新增】限制单次批量发送的最大消息数，例如 5 条
+	maxBatchSize := int64(5)
+	available := writePos - readPos
+	if available > maxBatchSize {
+		available = maxBatchSize
+	}
 
 	// 读取所有待处理的消息
-	messages := make([][]byte, 0)
+	messages := make([][]byte, 0, available)
 	messageCount := int64(0) // 统计本次处理的消息数
-	for readPos != writePos {
+	newReadPos := readPos
+	for i := int64(0); i < available; i++ {
 		itemPtr := v.roomBroadcastSlots[readPos].Load()
 		if itemPtr != nil {
 			messages = append(messages, itemPtr.data)
 			messageCount++ // 增加消息计数
 			v.roomBroadcastSlots[readPos].Store(nil)
 		}
-		readPos = (readPos + 1) % int64(len(v.roomBroadcastSlots))
+		newReadPos = (newReadPos + 1) % int64(len(v.roomBroadcastSlots))
 	}
 
-	// 更新读位置
-	v.roomBroadcastReadAto.Store(readPos)
-
 	if len(messages) > 0 {
+		// 更新读位置
+		v.roomBroadcastReadAto.Store(newReadPos)
 		// 增加接收消息计数（无论是否有WebSocket连接都计数）
 		v.receivedMessageCnt.Add(int64(messageCount))
 
@@ -593,10 +599,16 @@ func (v *Viewer) processNormalMessages() {
 
 		// 通过WebSocket发送消息
 		v.SendMessagesToWebSocket(messages)
+		// 【重要】如果还有剩余消息未处理，保持 hasMessage 为 1，确保下一个 Ticker 继续处理
+		if newReadPos != writePos {
+			v.hasMessage.Store(1)
+		} else {
+			v.hasMessage.Store(0)
+		}
+	} else {
+		// 重置消息标志
+		v.hasMessage.Store(0)
 	}
-
-	// 重置消息标志
-	v.hasMessage.Store(0)
 }
 
 // 通过WebSocket发送消息
