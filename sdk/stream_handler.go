@@ -121,7 +121,7 @@ func (h *StreamHandler) readFromSendBuffer() []*MessagePb {
 	writePos := h.sendWriteAt.Load()
 
 	// 限制每次读取的消息数量
-	maxMessages := int64(50)
+	maxMessages := int64(10)
 	available := writePos - readPos
 	if available > maxMessages {
 		available = maxMessages

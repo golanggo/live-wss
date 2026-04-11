@@ -491,7 +491,7 @@ func (v *Viewer) CollectMessages() [][]byte {
 // 观众消息读取器（由观众goroutine执行）
 func (v *Viewer) messageReader() {
 	// 定期检查是否有消息
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
