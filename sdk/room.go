@@ -34,7 +34,7 @@ type Room struct {
 	viewers   map[string]*Viewer // 观众列表（如果需要跟踪具体观众）
 	viewerMux sync.RWMutex       // 保护 viewerList 的互斥锁
 
-	// 使用 ring buffer 替换通道，避免通道满山丢失消息
+	// 使用 ring buffer 替换通道，避免通道满丢失消息
 	viewerSendRoomMessageBuf [MessageRingBufferSize]*MessagePb // 环形缓冲区
 	viewerSendWritePos       atomic.Int64                      // 写入位置
 	viewerSendReadPos        atomic.Int64                      // 读取位置
@@ -299,9 +299,9 @@ func (r *Room) storeMessageCountToDataSource() {
 
 func (r *Room) Close() {
 	// 如果房间不是直播中，直接返回
-	if !r.isOpenRoom.Load() {
-		return
-	}
+	// if !r.isOpenRoom.Load() {
+	// 	return
+	// }
 
 	// 直播结束时间设置为当前时间
 	r.endTime.Store(time.Now())
@@ -311,6 +311,27 @@ func (r *Room) Close() {
 
 	// 设置房间状态为已关闭
 	r.isOpenRoom.Store(false)
+
+	// 清理观众列表和连接
+	r.viewerMux.Lock()
+	for _, viewer := range r.viewers {
+		if viewer != nil {
+			viewer.Close()
+		}
+	}
+	// 清空 map，释放内存
+	clear(r.viewers)
+	r.viewerMux.Unlock()
+
+	// 清理消息环形缓冲区，帮助 GC 回收消息对象
+	r.viewerSendMu.Lock()
+	for i := range r.viewerSendRoomMessageBuf {
+		r.viewerSendRoomMessageBuf[i] = nil
+	}
+	r.viewerSendWritePos.Store(0)
+	r.viewerSendReadPos.Store(0)
+	r.viewerSendMu.Unlock()
+
 }
 
 func (r *Room) JoinRoom(viewer *Viewer) error {

@@ -712,6 +712,11 @@ func (v *Viewer) Close() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	// 业务回调
+	if v.onLeaveCallback != nil {
+		go v.onLeaveCallback(v)
+	}
+
 	// 取消上下文，触发 ReadMsgFromRoom 中的取消逻辑
 	if v.viewerCtxCancel != nil {
 		v.viewerCtxCancel()
@@ -720,13 +725,27 @@ func (v *Viewer) Close() {
 	// 关闭WebSocket连接
 	if v.Conn != nil {
 		v.Conn.Close()
+		v.Conn = nil
 	}
 
-	// 业务回调
-	if v.onLeaveCallback != nil {
-		go v.onLeaveCallback(v)
+	// 清理用户发送消息缓冲区
+	for i := range v.sendRoomSlots {
+		v.sendRoomSlots[i].Store(nil)
 	}
 
+	// 清理房间广播消息缓冲区
+	for i := range v.roomBroadcastSlots {
+		v.roomBroadcastSlots[i].Store(nil)
+	}
+
+	// 清理高优先级消息缓冲区
+	for i := range v.highPrioritySlots {
+		v.highPrioritySlots[i].Store(nil)
+	}
+
+	if v.Room != nil {
+		v.Room = nil
+	}
 }
 
 // UpdateActiveTime 更新最后活跃时间
