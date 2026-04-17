@@ -106,10 +106,6 @@ func (s *LiveWssSDK) GetRoom(roomNumber string) *Room {
 
 // RemoveRoom 删除房间
 func (s *LiveWssSDK) RemoveRoom(roomNumber string) {
-	room := s.GetRoom(roomNumber)
-	if room != nil {
-		room.Close()
-	}
 	s.roomManager.RemoveRoom(roomNumber)
 }
 
