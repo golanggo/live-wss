@@ -199,7 +199,7 @@ func (r *Room) storeSummaryToDataSource() {
 			r.storeLikeCountToDataSource()
 
 			// 存储用户时长
-			r.storeViewerDurationsToDataSource()
+			//r.storeViewerDurationsToDataSource()
 
 			// 存储评论数
 			r.storeMessageCountToDataSource()

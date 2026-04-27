@@ -1,12 +1,12 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -222,7 +222,7 @@ func (v *Viewer) GetUserInfo() ViewerInfo {
 
 func (v *Viewer) Start() {
 	// 存储之前会话时长
-	v.StorePreviousSessionTime()
+	//v.StorePreviousSessionTime()
 
 	// 网络->slots->房间
 	go v.ReadMessageWebSocketLoop()
@@ -377,6 +377,15 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 			log.Println("room context done")
 			return
 		default:
+			if err := v.Conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				log.Printf("Failed to set read deadline for viewer %s: %v", v.vid, err)
+				v.Conn.Close()
+				if v.Room != nil {
+					v.Room.LeaveRoom(v)
+				}
+				return
+			}
+
 			_, msgByte, err := v.Conn.ReadMessage()
 			if err != nil {
 				v.Conn.Close()
@@ -385,24 +394,24 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 				}
 				return
 			}
-			messageStr := string(msgByte)
-			//fmt.Print(messageStr)
 
 			// 检查是否为ping消息
-			if messageStr == "ping" {
+			if bytes.Equal(msgByte, []byte("ping")) {
 				if v.watchDurationStarted.Load() {
-					v.accumulatedViewDuration.Add(3000)
+					//v.accumulatedViewDuration.Add(3000)
+					v.storeViewerDurationsToDataSource(3000)
 					v.UpdateActiveTime()
 				}
 				v.UpdateActiveTime()
 				continue
 			}
 			// 处理时长累计心跳
-			if strings.HasPrefix(messageStr, "ping_") {
+			if bytes.HasPrefix(msgByte, []byte("ping_")) {
 				if v.watchDurationStarted.Load() {
-					msStr := strings.TrimPrefix(messageStr, "ping_")
+					msStr := string(msgByte[5:])
 					if ms, err := strconv.Atoi(msStr); err == nil && ms > 0 {
-						v.accumulatedViewDuration.Add(int64(ms))
+						//v.accumulatedViewDuration.Add(int64(ms))
+						v.storeViewerDurationsToDataSource(int64(ms))
 						v.UpdateActiveTime()
 					}
 				}
@@ -414,7 +423,9 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 			//只有当hasMessage为0时，才唤醒读取消息协程
 			if v.sendRoomHasMessage.CompareAndSwap(0, 1) {
 				// 唤醒读取消息协程
-				v.Room.viewerWake <- v.vid
+				if v.Room != nil {
+					v.Room.viewerWake <- v.vid
+				}
 			}
 		}
 	}
@@ -564,7 +575,7 @@ func (v *Viewer) processNormalMessages() {
 
 	// 如果没有消息，直接返回
 	if readPos == writePos {
-		v.hasMessage.Store(0)
+		//v.hasMessage.Store(0)
 		return
 	}
 	// 【新增】限制单次批量发送的最大消息数，例如 5 条
@@ -579,11 +590,12 @@ func (v *Viewer) processNormalMessages() {
 	messageCount := int64(0) // 统计本次处理的消息数
 	newReadPos := readPos
 	for i := int64(0); i < available; i++ {
-		itemPtr := v.roomBroadcastSlots[readPos].Load()
+		index := (readPos + i) % int64(len(v.roomBroadcastSlots))
+		itemPtr := v.roomBroadcastSlots[index].Load()
 		if itemPtr != nil {
 			messages = append(messages, itemPtr.data)
 			messageCount++ // 增加消息计数
-			v.roomBroadcastSlots[readPos].Store(nil)
+			v.roomBroadcastSlots[index].Store(nil)
 		}
 		newReadPos = (newReadPos + 1) % int64(len(v.roomBroadcastSlots))
 	}
@@ -600,14 +612,15 @@ func (v *Viewer) processNormalMessages() {
 		// 通过WebSocket发送消息
 		v.SendMessagesToWebSocket(messages)
 		// 【重要】如果还有剩余消息未处理，保持 hasMessage 为 1，确保下一个 Ticker 继续处理
-		if newReadPos != writePos {
+		currentWritePos := v.roomBroadcastWriteAto.Load()
+		if newReadPos != currentWritePos {
 			v.hasMessage.Store(1)
 		} else {
-			v.hasMessage.Store(0)
+			v.hasMessage.CompareAndSwap(1, 0)
 		}
 	} else {
 		// 重置消息标志
-		v.hasMessage.Store(0)
+		v.hasMessage.CompareAndSwap(1, 0)
 	}
 }
 
@@ -849,4 +862,17 @@ func (v *Viewer) IsWatchDurationStarted() bool {
 // GetLiveStartedAt 获取直播开始时间
 func (v *Viewer) GetLiveStartedAt() int64 {
 	return v.liveStartedAt.Load()
+}
+
+// 将用户时长存储到Redis
+func (v *Viewer) storeViewerDurationsToDataSource(duration int64) {
+	if v.Room != nil {
+		key := fmt.Sprintf(Live_WatchDuration, v.Room.firmUUID, v.Room.roomNumber, v.vid)
+		if v.Room.dataSource != nil {
+			err := v.Room.dataSource.AccumulatedBy(v.Room.roomCtx, key, duration)
+			if err != nil {
+				fmt.Printf("存储用户时长到Redis失败: %v, 用户: %s, 房间: %s\n", err, v.vid, v.Room.roomNumber)
+			}
+		}
+	}
 }
