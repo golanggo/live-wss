@@ -242,7 +242,9 @@ func (v *Viewer) StartMessageReader() {
 
 // Write 将用户的发送的数据写入一个环形缓冲区
 func (v *Viewer) Write(b []byte) {
-	//log.Println("write", string(b))
+	if v.Room == nil || !v.Room.IsOpen() {
+		return
+	}
 	buf := make([]byte, len(b))
 	copy(buf, b)
 
@@ -301,7 +303,12 @@ func (v *Viewer) Write(b []byte) {
 	if v.sendRoomHasMessage.CompareAndSwap(0, 1) {
 		// 唤醒读取消息协程
 		if v.Room != nil {
-			v.Room.viewerWake <- v.vid
+			//使用 select 非阻塞发送，防止房间关闭时 channel 无人消费导致阻塞
+			select {
+			case v.Room.viewerWake <- v.vid:
+			default:
+				// 如果 channel 满了或房间正在关闭，丢弃唤醒信号，依靠 ticker 轮询处理
+			}
 		}
 	}
 }
@@ -424,7 +431,11 @@ func (v *Viewer) ReadMessageWebSocketLoop() {
 			if v.sendRoomHasMessage.CompareAndSwap(0, 1) {
 				// 唤醒读取消息协程
 				if v.Room != nil {
-					v.Room.viewerWake <- v.vid
+					select {
+					case v.Room.viewerWake <- v.vid:
+					default:
+						// 如果 channel 满了或房间正在关闭，丢弃唤醒信号，依靠 ticker 轮询处理
+					}
 				}
 			}
 		}
@@ -722,8 +733,22 @@ func (v *Viewer) Ping(rate time.Duration) {
 // Close 关闭观众连接，及相关资源
 func (v *Viewer) Close() {
 	// 加锁保护，避免重复关闭
-	v.mu.Lock()
+	if !v.mu.TryLock() {
+		return // 如果正在关闭中，直接返回
+	}
 	defer v.mu.Unlock()
+
+	// 业务回调
+	if v.onLeaveCallback != nil {
+		go func() {
+			defer func() {
+				if err := recover(); err != nil {
+					log.Printf("Viewer onLeaveCallback panic recovered: %v", err)
+				}
+			}()
+			v.onLeaveCallback(v)
+		}()
+	}
 
 	// 取消上下文，触发 ReadMsgFromRoom 中的取消逻辑
 	if v.viewerCtxCancel != nil {
@@ -733,13 +758,23 @@ func (v *Viewer) Close() {
 	// 关闭WebSocket连接
 	if v.Conn != nil {
 		v.Conn.Close()
+		v.Conn = nil
 	}
 
-	// 业务回调
-	if v.onLeaveCallback != nil {
-		go v.onLeaveCallback(v)
+	// 清理用户发送消息缓冲区
+	for i := range v.sendRoomSlots {
+		v.sendRoomSlots[i].Store(nil)
 	}
 
+	// 清理房间广播消息缓冲区
+	for i := range v.roomBroadcastSlots {
+		v.roomBroadcastSlots[i].Store(nil)
+	}
+
+	// 清理高优先级消息缓冲区
+	for i := range v.highPrioritySlots {
+		v.highPrioritySlots[i].Store(nil)
+	}
 }
 
 // UpdateActiveTime 更新最后活跃时间

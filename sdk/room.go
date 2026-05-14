@@ -299,9 +299,9 @@ func (r *Room) storeMessageCountToDataSource() {
 
 func (r *Room) Close() {
 	// 如果房间不是直播中，直接返回
-	if !r.isOpenRoom.Load() {
-		return
-	}
+	// if !r.isOpenRoom.Load() {
+	// 	return
+	// }
 
 	// 直播结束时间设置为当前时间
 	r.endTime.Store(time.Now())
@@ -311,8 +311,28 @@ func (r *Room) Close() {
 
 	// 设置房间状态为已关闭
 	r.isOpenRoom.Store(false)
-}
 
+	// 清理观众列表和连接
+	r.viewerMux.Lock()
+	for _, viewer := range r.viewers {
+		if viewer != nil {
+			viewer.Close()
+		}
+	}
+	// 清空 map，释放内存
+	clear(r.viewers)
+	r.viewerMux.Unlock()
+
+	// 清理消息环形缓冲区，帮助 GC 回收消息对象
+	r.viewerSendMu.Lock()
+	for i := range r.viewerSendRoomMessageBuf {
+		r.viewerSendRoomMessageBuf[i] = nil
+	}
+	r.viewerSendWritePos.Store(0)
+	r.viewerSendReadPos.Store(0)
+	r.viewerSendMu.Unlock()
+
+}
 func (r *Room) JoinRoom(viewer *Viewer) error {
 	if !r.isOpenRoom.Load() {
 		return ErrRoomNoLiving

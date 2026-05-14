@@ -72,10 +72,28 @@ func (m *RoomManager) GetRoom(roomNumber string) *Room {
 }
 
 func (m *RoomManager) RemoveRoom(roomNumber string) {
+	var room *Room
 	m.roomRWLock.Lock()
-	defer m.roomRWLock.Unlock()
-	delete(m.Rooms, roomNumber)
-	fmt.Printf("房间 %s 已删除。\n", roomNumber)
+	room, exists := m.Rooms[roomNumber]
+	if exists {
+		delete(m.Rooms, roomNumber)
+	}
+	m.roomRWLock.Unlock()
+
+	if room == nil {
+		fmt.Printf("房间 %s 不存在，无需删除。\n", roomNumber)
+		return
+	}
+	//异步关闭房间，避免阻塞 RemoveRoom 调用者
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				fmt.Printf("Room Close panic recovered: %v", err)
+			}
+		}()
+		room.Close()
+		fmt.Printf("房间 %s 已删除并关闭。\n", roomNumber)
+	}()
 }
 
 // 获取房间管理器详细信息，比如房间管理器中的房间数量，每个房间的人数，每个房间的直播状态等
