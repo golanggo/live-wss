@@ -145,7 +145,7 @@ func (b *Benchmark) initDataSource() {
 	}
 	// 使用Redis数据源
 	redisStream := sdk.NewRedisDataSource(redis.RDB)
-	stream := fmt.Sprintf(sdk.Live_Msg_Broadcast, b.config.FirmUUID)
+	stream := fmt.Sprintf(sdk.Live_Msg_Broadcast, b.config.FirmUUID, b.config.RoomNumber)
 	redisStream.CreateStreamHandler(b.ctx, b.config.RoomNumber, stream)
 	b.dataSource = &RedisDataSourceAdapter{stream: redisStream, roomNumber: b.config.RoomNumber}
 	fmt.Println("  使用 Redis Stream 数据源")
@@ -159,15 +159,50 @@ type RedisDataSourceAdapter struct {
 
 // Get implements sdk.DataSource.
 func (r *RedisDataSourceAdapter) Get(ctx context.Context, key string) (string, error) {
-	panic("unimplemented")
+	return r.stream.Get(ctx, key)
 }
 
 // Store implements sdk.DataSource.
 func (r *RedisDataSourceAdapter) Store(ctx context.Context, key string, value any, duration time.Duration) error {
-	panic("unimplemented")
+	return r.stream.Store(ctx, key, value, duration)
 }
+
 func (r *RedisDataSourceAdapter) AccumulatedBy(ctx context.Context, key string, value int64) error {
-	panic("unimplemented")
+	return r.stream.AccumulatedBy(ctx, key, value)
+}
+
+func (r *RedisDataSourceAdapter) StoreMax(ctx context.Context, key string, value uint32, duration time.Duration) error {
+	return r.stream.StoreMax(ctx, key, value, duration)
+}
+
+func (r *RedisDataSourceAdapter) SyncOnlineViewerPresence(
+	ctx context.Context,
+	userOwnerKey string,
+	userExpiryKey string,
+	totalCountKey string,
+	roomMaxKey string,
+	peakCountKey string,
+	instanceID string,
+	operation sdk.OnlineViewerOperation,
+	viewerIDs []string,
+	maxViewer uint32,
+	ttl time.Duration,
+	peakRetention time.Duration,
+) (uint32, sdk.OnlineViewerSyncStatus, []string, error) {
+	return r.stream.SyncOnlineViewerPresence(
+		ctx,
+		userOwnerKey,
+		userExpiryKey,
+		totalCountKey,
+		roomMaxKey,
+		peakCountKey,
+		instanceID,
+		operation,
+		viewerIDs,
+		maxViewer,
+		ttl,
+		peakRetention,
+	)
 }
 
 func (r *RedisDataSourceAdapter) SendMessage(ctx context.Context, stream string, msg *sdk.MessagePb) error {
@@ -192,7 +227,7 @@ func (r *RedisDataSourceAdapter) GetRedisBytesRecv(stream string) int64 {
 func (b *Benchmark) createRoom() {
 	fmt.Println("[2/6] 创建直播房间...")
 	var err error
-	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, b.config.RoomNumber, uint32(b.config.TotalViewers+1000), fmt.Sprintf("%s", b.config.FirmUUID))
+	b.room, err = sdk.NewRoom(b.ctx, b.config.RoomName, b.config.RoomNumber, uint32(b.config.TotalViewers+1000), fmt.Sprintf("%d", b.config.FirmUUID))
 	if err != nil {
 		panic(fmt.Sprintf("创建房间失败: %v", err))
 	}

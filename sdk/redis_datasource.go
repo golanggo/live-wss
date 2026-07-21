@@ -10,6 +10,137 @@ import (
 
 const RedisDataSourceRingBuffer = 8192
 
+var storeMaxScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current or tonumber(ARGV[1]) > tonumber(current) then
+	redis.call("SET", KEYS[1], ARGV[1])
+end
+local ttl = tonumber(ARGV[2])
+if ttl and ttl > 0 then
+	redis.call("PEXPIRE", KEYS[1], ttl)
+end
+return 1
+`)
+
+var syncOnlineViewerPresenceScript = redis.NewScript(`
+local redisTime = redis.call("TIME")
+local now = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local operation = ARGV[1]
+local instanceID = ARGV[2]
+local maxViewer = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local expiresAt = now + ttl
+local peakRetention = tonumber(ARGV[5])
+local viewerCount = tonumber(ARGV[6])
+
+local viewerIDs = {}
+for i = 1, viewerCount do
+	viewerIDs[i] = ARGV[6 + i]
+end
+
+local function storePeak(value)
+	local currentPeak = redis.call("GET", KEYS[5])
+	if not currentPeak or value > tonumber(currentPeak) then
+		redis.call("SET", KEYS[5], value)
+	end
+	if peakRetention > 0 then
+		redis.call("PEXPIRE", KEYS[5], peakRetention)
+	end
+end
+
+local expiredViewerIDs = redis.call("ZRANGEBYSCORE", KEYS[2], "-inf", now)
+for _, expiredViewerID in ipairs(expiredViewerIDs) do
+	redis.call("HDEL", KEYS[1], expiredViewerID)
+end
+if #expiredViewerIDs > 0 then
+	redis.call("ZREMRANGEBYSCORE", KEYS[2], "-inf", now)
+end
+
+local currentGlobalCount = redis.call("HLEN", KEYS[1])
+local configuredMaxViewer = redis.call("GET", KEYS[4])
+if currentGlobalCount == 0 then
+	configuredMaxViewer = tostring(maxViewer)
+	redis.call("SET", KEYS[4], configuredMaxViewer)
+elseif not configuredMaxViewer then
+	configuredMaxViewer = tostring(maxViewer)
+	redis.call("SET", KEYS[4], configuredMaxViewer)
+elseif operation == "join" and tonumber(configuredMaxViewer) ~= maxViewer then
+	storePeak(currentGlobalCount)
+			return {-1, currentGlobalCount, 0}
+
+end
+local effectiveMaxViewer = tonumber(configuredMaxViewer or maxViewer)
+
+local rejected = {}
+if operation == "join" then
+	local viewerID = viewerIDs[1]
+	local owner = redis.call("HGET", KEYS[1], viewerID)
+	if owner then
+		if owner == instanceID then
+			redis.call("ZADD", KEYS[2], expiresAt, viewerID)
+		end
+		redis.call("SET", KEYS[3], currentGlobalCount)
+		storePeak(currentGlobalCount)
+		return {2, currentGlobalCount, 0}
+	end
+	if currentGlobalCount >= effectiveMaxViewer then
+		redis.call("SET", KEYS[3], currentGlobalCount)
+		storePeak(currentGlobalCount)
+		return {1, currentGlobalCount, 0}
+	end
+	redis.call("HSET", KEYS[1], viewerID, instanceID)
+	redis.call("ZADD", KEYS[2], expiresAt, viewerID)
+elseif operation == "leave" then
+	local viewerID = viewerIDs[1]
+	if redis.call("HGET", KEYS[1], viewerID) == instanceID then
+		redis.call("HDEL", KEYS[1], viewerID)
+		redis.call("ZREM", KEYS[2], viewerID)
+	end
+elseif operation == "heartbeat" then
+	for _, viewerID in ipairs(viewerIDs) do
+		local owner = redis.call("HGET", KEYS[1], viewerID)
+		if owner and owner ~= instanceID then
+			table.insert(rejected, viewerID)
+		elseif not owner then
+			local count = redis.call("HLEN", KEYS[1])
+			if count >= effectiveMaxViewer then
+				table.insert(rejected, viewerID)
+			else
+				redis.call("HSET", KEYS[1], viewerID, instanceID)
+				redis.call("ZADD", KEYS[2], expiresAt, viewerID)
+			end
+		else
+			redis.call("ZADD", KEYS[2], expiresAt, viewerID)
+		end
+	end
+elseif operation == "close" then
+	for _, viewerID in ipairs(viewerIDs) do
+		if redis.call("HGET", KEYS[1], viewerID) == instanceID then
+			redis.call("HDEL", KEYS[1], viewerID)
+			redis.call("ZREM", KEYS[2], viewerID)
+		end
+	end
+end
+
+local globalCount = redis.call("HLEN", KEYS[1])
+redis.call("SET", KEYS[3], globalCount)
+if globalCount == 0 then
+	redis.call("DEL", KEYS[1])
+	redis.call("DEL", KEYS[2])
+	redis.call("DEL", KEYS[4])
+elseif ttl > 0 then
+	redis.call("PEXPIRE", KEYS[1], ttl * 2)
+	redis.call("PEXPIRE", KEYS[2], ttl * 2)
+	redis.call("PEXPIRE", KEYS[4], ttl * 2)
+end
+storePeak(globalCount)
+local result = {0, globalCount, #rejected}
+for _, viewerID in ipairs(rejected) do
+	table.insert(result, viewerID)
+end
+return result
+`)
+
 // 简化的Redis Stream数据源
 type RedisDataSource struct {
 	rdbClient *redis.ClusterClient
@@ -118,4 +249,81 @@ func (s *RedisDataSource) Get(ctx context.Context, key string) (string, error) {
 // Accumulated 累计键值对到Redis
 func (s *RedisDataSource) AccumulatedBy(ctx context.Context, key string, value int64) error {
 	return s.rdbClient.IncrBy(ctx, key, value).Err()
+}
+
+// StoreMax 通过 Lua 脚本原子地保留更大的值，避免多实例并发覆盖峰值。
+func (s *RedisDataSource) StoreMax(ctx context.Context, key string, value uint32, duration time.Duration) error {
+	return storeMaxScript.Run(ctx, s.rdbClient, []string{key}, value, duration.Milliseconds()).Err()
+}
+
+// SyncOnlineViewerPresence 原子维护 viewerID 到服务实例的归属、实例租约、全局人数和区间峰值。
+func (s *RedisDataSource) SyncOnlineViewerPresence(
+	ctx context.Context,
+	userOwnerKey string,
+	userExpiryKey string,
+	totalCountKey string,
+	roomMaxKey string,
+	peakCountKey string,
+	instanceID string,
+	operation OnlineViewerOperation,
+	viewerIDs []string,
+	maxViewer uint32,
+	ttl time.Duration,
+	peakRetention time.Duration,
+) (uint32, OnlineViewerSyncStatus, []string, error) {
+	args := make([]any, 0, 6+len(viewerIDs))
+	args = append(args,
+		string(operation),
+		instanceID,
+		maxViewer,
+		ttl.Milliseconds(),
+		peakRetention.Milliseconds(),
+		len(viewerIDs),
+	)
+	for _, viewerID := range viewerIDs {
+		args = append(args, viewerID)
+	}
+
+	result, err := syncOnlineViewerPresenceScript.Run(
+		ctx,
+		s.rdbClient,
+		[]string{userOwnerKey, userExpiryKey, totalCountKey, roomMaxKey, peakCountKey},
+		args...,
+	).Slice()
+	if err != nil {
+		return 0, OnlineViewerSyncAccepted, nil, err
+	}
+	if len(result) < 3 {
+		return 0, OnlineViewerSyncAccepted, nil, fmt.Errorf("unexpected online viewer sync result: %v", result)
+	}
+
+	statusValue, ok := result[0].(int64)
+	if !ok {
+		return 0, OnlineViewerSyncAccepted, nil, fmt.Errorf("unexpected online viewer status value: %T", result[0])
+	}
+	globalCount, ok := result[1].(int64)
+	if !ok || globalCount < 0 || uint64(globalCount) > uint64(^uint32(0)) {
+		return 0, OnlineViewerSyncAccepted, nil, fmt.Errorf("unexpected online viewer count value: %v", result[1])
+	}
+	if statusValue == -1 {
+		return uint32(globalCount), OnlineViewerSyncAccepted, nil, ErrRoomMaxMismatch
+	}
+	status := OnlineViewerSyncStatus(statusValue)
+	if status < OnlineViewerSyncAccepted || status > OnlineViewerSyncDuplicate {
+		return 0, OnlineViewerSyncAccepted, nil, fmt.Errorf("unexpected online viewer status: %d", statusValue)
+	}
+
+	rejectedCount, ok := result[2].(int64)
+	if !ok || rejectedCount < 0 || int64(len(result)-3) != rejectedCount {
+		return 0, OnlineViewerSyncAccepted, nil, fmt.Errorf("unexpected rejected viewer count: %v", result)
+	}
+	rejectedViewerIDs := make([]string, 0, rejectedCount)
+	for _, item := range result[3:] {
+		viewerID, ok := item.(string)
+		if !ok {
+			return 0, OnlineViewerSyncAccepted, nil, fmt.Errorf("unexpected rejected viewer ID value: %T", item)
+		}
+		rejectedViewerIDs = append(rejectedViewerIDs, viewerID)
+	}
+	return uint32(globalCount), status, rejectedViewerIDs, nil
 }

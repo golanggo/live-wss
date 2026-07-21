@@ -8,17 +8,23 @@ import (
 )
 
 const (
-	Live_Entry             = "%v:own_live:%v:entry:%v"                // 进入直播
-	Live_Banned            = "%v:own_live:%v:banned:%v"               // 封禁用户
-	Live_Mute              = "%v:own_live:%v:mute:%v"                 // 禁言用户
-	Live_Total_Count       = "%v:own_live:%v:total_count"             // 观看人次
-	Live_Online_User_Count = "%v:own_live:%v:total_online_user_count" // 观看在线人数
-	Live_Liked_Count       = "%v:own_live:%v:liked_count"             // 点赞数
-	Live_Comment_Count     = "%v:own_live:%v:comment_count"           // 评论数
-	Live_Msg_Broadcast     = "%v:own_live:%v:broadcast"               // 消息广播
-	Live_Msg_Broadcast_HP  = "%v:own_live:%v:broadcast:hp"            // 高优先级消息广播
-	Live_WatchDuration     = "%v:own_live:%v:watch_duration:%v"       // 进入直播观看时长
-	Live_Leave_User_Count  = "%v:own_live:%v:total_leave_count"       // 观看退出人数
+	Live_Entry              = "%v:own_live:%v:entry:%v"                  // 进入直播
+	Live_Banned             = "%v:own_live:%v:banned:%v"                 // 封禁用户
+	Live_Mute               = "%v:own_live:%v:mute:%v"                   // 禁言用户
+	Live_Total_Count        = "%v:own_live:%v:total_count"               // 观看人次
+	Live_Online_User_Count  = "{%v:own_live:%v}:total_online_user_count" // 分布式实时在线人数
+	Live_Online_User_Owner  = "{%v:own_live:%v}:online_user_owner"       // 在线用户到服务实例的归属 Hash
+	Live_Online_User_Expiry = "{%v:own_live:%v}:online_user_expiry"      // 各在线用户租约过期时间 ZSet
+
+	Live_Online_Room_Max        = "{%v:own_live:%v}:online_room_max"           // 分布式房间统一容量
+	Live_Online_User_Peak_Count = "{%v:own_live:%v}:online_user_peak_count:%v" // 指定时间区间内最高在线人数，最后一个参数为区间开始毫秒时间戳
+
+	Live_Liked_Count      = "%v:own_live:%v:liked_count"       // 点赞数
+	Live_Comment_Count    = "%v:own_live:%v:comment_count"     // 评论数
+	Live_Msg_Broadcast    = "%v:own_live:%v:broadcast"         // 消息广播
+	Live_Msg_Broadcast_HP = "%v:own_live:%v:broadcast:hp"      // 高优先级消息广播
+	Live_WatchDuration    = "%v:own_live:%v:watch_duration:%v" // 进入直播观看时长
+	Live_Leave_User_Count = "%v:own_live:%v:total_leave_count" // 观看退出人数
 )
 
 const (
@@ -38,11 +44,14 @@ const (
 )
 
 var (
-	ErrRoomNoLiving    = errors.New("直播已经结束")
-	ErrRoomIsFull      = errors.New("房间已满")
-	ErrNewRoomName     = errors.New("新房间名称不能为空")
-	ErrNewRoomNumber   = errors.New("新房间号不能为空")
-	ErrNewRoomFirmUUID = errors.New("事业部ID不能为空")
+	ErrRoomNoLiving        = errors.New("直播已经结束")
+	ErrRoomIsFull          = errors.New("房间已满")
+	ErrOnlinePresenceSync  = errors.New("同步分布式在线人数失败")
+	ErrViewerAlreadyJoined = errors.New("观众已在其他服务实例中加入房间")
+	ErrRoomMaxMismatch     = errors.New("同一分布式房间的最大人数配置不一致")
+	ErrNewRoomName         = errors.New("新房间名称不能为空")
+	ErrNewRoomNumber       = errors.New("新房间号不能为空")
+	ErrNewRoomFirmUUID     = errors.New("事业部ID不能为空")
 )
 
 const (

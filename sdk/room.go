@@ -51,9 +51,19 @@ type Room struct {
 	leaveRoomViewerCnt     atomic.Uint32 // 离开房间人数
 	lastLeaveRoomViewerCnt atomic.Uint32 // 上一次统计离开房间人数
 
-	onlineViewer       atomic.Uint32 // 实时在线人数
-	totalViewer        atomic.Uint32 // 总观看人次
-	lastTotalViewerCnt atomic.Uint32 // 上一次统计总观看人次
+	onlineViewer            atomic.Uint32 // 本实例实时在线人数
+	distributedOnlineViewer atomic.Uint32 // 所有服务实例的实时在线人数
+	totalViewer             atomic.Uint32 // 本实例累计观看人次
+	lastTotalViewerCnt      atomic.Uint32 // 上一次统计总观看人次
+
+	instanceID        string        // 当前 Room 实例唯一标识
+	onlinePresenceTTL time.Duration // 分布式在线会话心跳过期时间
+
+	onlinePeakInterval    time.Duration // 最高在线人数统计区间
+	onlinePeakRetention   time.Duration // 区间峰值数据保留时间，0 表示不过期
+	onlinePeakMu          sync.Mutex
+	onlinePeakWindowStart time.Time
+	onlinePeakCount       uint32
 
 	likeCount     atomic.Uint32 // 点赞数
 	lastLikeCount atomic.Uint32 // 上一次统计点赞数
@@ -65,6 +75,11 @@ type Room struct {
 }
 
 func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax uint32, firmUUID string) (*Room, error) {
+	return NewRoomWithConfig(ctx, rootName, roomNumber, roomMax, firmUUID, RoomConfig{})
+}
+
+func NewRoomWithConfig(ctx context.Context, rootName string, roomNumber string, roomMax uint32, firmUUID string, config RoomConfig) (*Room, error) {
+	config = config.withDefaults()
 	if len(rootName) == 0 {
 		return nil, ErrNewRoomName
 	}
@@ -77,19 +92,29 @@ func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax ui
 		return nil, ErrNewRoomFirmUUID
 	}
 
+	instanceID, err := newRoomInstanceID()
+	if err != nil {
+		return nil, err
+	}
+
 	// 创建context，用于传递给其他goroutine
 	roomCtx, cancelFunc := context.WithCancel(ctx)
 
 	// 创建房间
 	room := &Room{
-		firmUUID:   firmUUID,
-		roomNumber: roomNumber,
-		roomName:   rootName,
-		maxViewer:  roomMax,
-		viewers:    make(map[string]*Viewer),
-		viewerWake: make(chan string, roomMax),
-		roomCtx:    roomCtx,
-		cancelFunc: cancelFunc,
+		firmUUID:              firmUUID,
+		roomNumber:            roomNumber,
+		roomName:              rootName,
+		maxViewer:             roomMax,
+		viewers:               make(map[string]*Viewer),
+		viewerWake:            make(chan string, roomMax),
+		roomCtx:               roomCtx,
+		cancelFunc:            cancelFunc,
+		onlinePeakInterval:    config.OnlinePeakInterval,
+		onlinePeakRetention:   config.OnlinePeakRetention,
+		onlinePeakWindowStart: time.Now().Truncate(config.OnlinePeakInterval),
+		instanceID:            instanceID,
+		onlinePresenceTTL:     config.OnlinePresenceTTL,
 	}
 	// 初始化 ring buffer 位置
 	room.viewerSendWritePos.Store(0)
@@ -178,6 +203,12 @@ func (r *Room) Start(dataSource DataSource) {
 	// 房间统计数据->数据源
 	go r.storeSummaryToDataSource()
 
+	// 维护本实例在线人数心跳并获取分布式全局在线人数。
+	go r.collectOnlineViewerPresence()
+
+	// 按配置时间区间统计最高实时在线人数
+	go r.collectOnlineViewerPeak()
+
 	fmt.Printf("%s 房间已经启动\n", r.roomNumber)
 }
 
@@ -192,7 +223,10 @@ func (r *Room) storeSummaryToDataSource() {
 			fmt.Printf("房间 %s storeSummaryToDataSource 协程退出（房间上下文取消）\n", r.roomNumber)
 			return // 房间关闭ok退出
 		case <-ticker.C:
-			// 存储在线用户数
+			// 存储实时在线用户数与当前区间峰值
+			r.storeOnlineViewerSummary()
+
+			// 存储累计观看用户数和累计离开用户数
 			r.storeViewerCntToDataSource()
 
 			// 存储点赞数
@@ -298,32 +332,43 @@ func (r *Room) storeMessageCountToDataSource() {
 }
 
 func (r *Room) Close() {
-	// 如果房间不是直播中，直接返回
-	// if !r.isOpenRoom.Load() {
-	// 	return
-	// }
+	// Swap 保证关闭逻辑只执行一次，并在清理前阻止新观众加入。
+	if !r.isOpenRoom.Swap(false) {
+		return
+	}
 
-	// 直播结束时间设置为当前时间
 	r.endTime.Store(time.Now())
+	r.viewerMux.Lock()
 
-	// 主动关闭房间上下文
+	// 先原子移除本实例拥有的全部用户，得到其他存活实例仍在房间中的全局人数。
+	viewerIDs := r.localViewerIDsLocked()
+	_, _, _, err := r.syncOnlineViewerPresence(r.roomCtx, OnlineViewerClose, viewerIDs, 0)
+	if err != nil {
+		fmt.Printf("关闭房间时同步分布式在线人数失败: %v, 房间: %s\n", err, r.roomNumber)
+	}
+	r.onlineViewer.Store(0)
+	if _, distributed := r.distributedOnlineDataSource(); !distributed {
+		r.storeCurrentOnlineViewerCount(0)
+	}
+	r.flushCurrentOnlineViewerPeak()
+
+	// 在分布式状态更新后取消上下文，避免 Redis 操作使用已取消的 context。
 	r.cancelFunc()
 
-	// 设置房间状态为已关闭
-	r.isOpenRoom.Store(false)
-
-	// 清理观众列表和连接
-	r.viewerMux.Lock()
+	viewers := make([]*Viewer, 0, len(r.viewers))
 	for _, viewer := range r.viewers {
 		if viewer != nil {
-			viewer.Close()
+			viewers = append(viewers, viewer)
 		}
 	}
-	// 清空 map，释放内存
 	clear(r.viewers)
 	r.viewerMux.Unlock()
 
-	// 清理消息环形缓冲区，帮助 GC 回收消息对象
+	for _, viewer := range viewers {
+		viewer.Close()
+	}
+
+	// 清理消息环形缓冲区，帮助 GC 回收消息对象。
 	r.viewerSendMu.Lock()
 	for i := range r.viewerSendRoomMessageBuf {
 		r.viewerSendRoomMessageBuf[i] = nil
@@ -331,28 +376,44 @@ func (r *Room) Close() {
 	r.viewerSendWritePos.Store(0)
 	r.viewerSendReadPos.Store(0)
 	r.viewerSendMu.Unlock()
-
 }
+
 func (r *Room) JoinRoom(viewer *Viewer) error {
-	if !r.isOpenRoom.Load() {
-		return ErrRoomNoLiving
-	}
-	if r.onlineViewer.Load() >= r.maxViewer {
-		return ErrRoomIsFull
+	if viewer == nil {
+		return fmt.Errorf("观众不能为空")
 	}
 
 	r.viewerMux.Lock()
-	// 设置观众的房间引用
+	defer r.viewerMux.Unlock()
+
+	if !r.isOpenRoom.Load() {
+		return ErrRoomNoLiving
+	}
+	if _, exists := r.viewers[viewer.vid]; exists {
+		return nil
+	}
+
+	proposedLocalCount := uint32(len(r.viewers) + 1)
+	_, status, _, err := r.syncOnlineViewerPresence(
+		r.roomCtx,
+		OnlineViewerJoin,
+		[]string{viewer.vid},
+		proposedLocalCount,
+	)
+	if err != nil {
+		return err
+	}
+	switch status {
+	case OnlineViewerSyncRoomFull:
+		return ErrRoomIsFull
+	case OnlineViewerSyncDuplicate:
+		return ErrViewerAlreadyJoined
+	}
+
 	viewer.Room = r
 	r.viewers[viewer.vid] = viewer
-	r.viewerMux.Unlock()
-
-	// 更新在线人数和总人数
-	r.onlineViewer.Add(1)
+	r.onlineViewer.Store(proposedLocalCount)
 	r.totalViewer.Add(1)
-
-	// 增强日志：记录用户加入房间
-	//fmt.Printf("room=%s %s 加入房间。\n", r.roomNumber, viewer.vname)
 	return nil
 }
 
@@ -362,35 +423,28 @@ func (r *Room) LeaveRoom(viewer *Viewer) {
 	}
 
 	r.viewerMux.Lock()
-	defer r.viewerMux.Unlock()
-
-	// 检查观众是否在房间中
-	if _, exists := r.viewers[viewer.vid]; exists {
-		// 从观众列表中移除观众
-		viewer.Close()
-		delete(r.viewers, viewer.vid)
-	} else {
-		fmt.Printf("警告: 观众 %s 不在房间中，无法退出\n", viewer.vid)
+	joinedViewer, exists := r.viewers[viewer.vid]
+	if !exists {
+		r.viewerMux.Unlock()
+		return
 	}
 
-	// 记录当前在线人数
-	currentOnline := r.onlineViewer.Load()
-
-	// 更新在线人数
-	// 减1：利用无符号整数溢出特性，^uint32(0) 等于最大无符号32位整数，加后溢出即为减1
-	if currentOnline > 0 {
-		r.onlineViewer.Add(^uint32(0))
-	}
+	delete(r.viewers, viewer.vid)
+	localCount := uint32(len(r.viewers))
+	r.onlineViewer.Store(localCount)
 	r.leaveRoomViewerCnt.Add(1)
-	// else {
-	// 	r.lastLeaveRoomViewerCnt.Store(0)
-	// 	r.lastLikeCount.Store(0)
-	// 	r.lastTotalViewerCnt.Store(0)
-	// }
+	if _, _, _, err := r.syncOnlineViewerPresence(
+		r.roomCtx,
+		OnlineViewerLeave,
+		[]string{viewer.vid},
+		localCount,
+	); err != nil {
+		fmt.Printf("观众离房时同步分布式在线人数失败: %v, 房间: %s\n", err, r.roomNumber)
+	}
+	r.viewerMux.Unlock()
 
-	// 增强日志：记录用户离开房间
-	// fmt.Printf("【Room.LeaveRoom】room=%s viewerID=%s name=%s left room, current online: %d, previous online: %d\n",
-	// 	r.roomNumber, viewer.vid, viewer.vname, r.onlineViewer.Load(), currentOnline)
+	// 关闭连接放在房间锁之外，避免取消回调再次进入 LeaveRoom 时发生锁等待。
+	joinedViewer.Close()
 }
 
 // 房间消息收集器
@@ -784,7 +838,7 @@ func (r *Room) Info() string {
 	r.viewerSendMu.RUnlock()
 
 	return fmt.Sprintf("房间号 %s 房间名称: %s 人数: %d 直播状态: %v 最大容纳人数: %d 总观看人数: %d 点赞数: %d 消息缓冲区中的消息数量: %d \n",
-		r.roomNumber, r.roomName, r.onlineViewer.Load(), r.isOpenRoom.Load(), r.maxViewer, r.totalViewer.Load(), r.likeCount.Load(), messageCount)
+		r.roomNumber, r.roomName, r.GetOnlineViewerCount(), r.isOpenRoom.Load(), r.maxViewer, r.totalViewer.Load(), r.likeCount.Load(), messageCount)
 }
 
 // 获取房间号
@@ -821,8 +875,13 @@ func (r *Room) ViewerSendRoomMessageCount() int64 {
 	return count
 }
 
-// GetOnlineViewerCount 获取房间当前在线人数
+// GetOnlineViewerCount 获取所有服务实例合计的实时在线人数。
 func (r *Room) GetOnlineViewerCount() uint32 {
+	return r.distributedOnlineViewer.Load()
+}
+
+// GetLocalOnlineViewerCount 获取当前服务实例承载的实时在线人数。
+func (r *Room) GetLocalOnlineViewerCount() uint32 {
 	return r.onlineViewer.Load()
 }
 
@@ -841,7 +900,7 @@ func (r *Room) PrintRoomInfo() {
 	fmt.Printf("  房间名称: %s\n", r.roomName)
 	fmt.Printf("  最大容纳人数: %d\n", r.maxViewer)
 	fmt.Printf("  总观看人数: %d\n", r.totalViewer.Load())
-	fmt.Printf("  在线人数: %d\n", r.onlineViewer.Load())
+	fmt.Printf("  在线人数: %d（本实例: %d）\n", r.GetOnlineViewerCount(), r.GetLocalOnlineViewerCount())
 	fmt.Printf("  点赞数: %d\n", r.likeCount.Load())
 	fmt.Printf("  消息缓冲区中的消息数量: %d\n", r.ViewerSendRoomMessageCount())
 	fmt.Printf("  直播状态: %v\n", r.isOpenRoom.Load())

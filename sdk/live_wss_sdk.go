@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -16,6 +17,16 @@ type LiveWssSDKConfig struct {
 
 	// 默认房间配置
 	DefaultMaxViewers uint32
+
+	// OnlinePeakInterval 最高实时在线人数的统计区间，例如 1*time.Minute。
+	// 小于等于 0 时默认使用 1 分钟。
+	OnlinePeakInterval time.Duration
+
+	// OnlinePeakRetention 每个区间峰值的保留时间，0 表示不过期。
+	OnlinePeakRetention time.Duration
+
+	// OnlinePresenceTTL 分布式在线用户租约过期时间，默认 30 秒。
+	OnlinePresenceTTL time.Duration
 }
 
 // LiveWssSDK 初始化器
@@ -42,6 +53,14 @@ func NewLiveWssSDK(config *LiveWssSDKConfig) (*LiveWssSDK, error) {
 	if config.DefaultMaxViewers == 0 {
 		config.DefaultMaxViewers = 100000 // 默认10万人
 	}
+	roomConfig := RoomConfig{
+		OnlinePeakInterval:  config.OnlinePeakInterval,
+		OnlinePeakRetention: config.OnlinePeakRetention,
+		OnlinePresenceTTL:   config.OnlinePresenceTTL,
+	}.withDefaults()
+	config.OnlinePeakInterval = roomConfig.OnlinePeakInterval
+	config.OnlinePeakRetention = roomConfig.OnlinePeakRetention
+	config.OnlinePresenceTTL = roomConfig.OnlinePresenceTTL
 
 	// 创建Redis数据源
 	redisDataSource := NewRedisDataSource(config.RedisClient)
@@ -87,7 +106,11 @@ func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber string, roomName
 	}
 
 	// 创建房间
-	room, err := NewRoom(ctx, roomName, roomNumber, maxViewers, firmUUID)
+	room, err := NewRoomWithConfig(ctx, roomName, roomNumber, maxViewers, firmUUID, RoomConfig{
+		OnlinePeakInterval:  s.config.OnlinePeakInterval,
+		OnlinePeakRetention: s.config.OnlinePeakRetention,
+		OnlinePresenceTTL:   s.config.OnlinePresenceTTL,
+	})
 	if err != nil {
 		return err
 	}

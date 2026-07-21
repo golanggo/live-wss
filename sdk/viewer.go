@@ -128,6 +128,7 @@ type Viewer struct {
 	wsWriteMu sync.Mutex
 
 	onLeaveCallback      func(viewer *Viewer) // 用户退出回调
+	closed               atomic.Bool          // 关闭状态，确保资源清理和回调只执行一次
 	watchDurationStarted atomic.Bool          // 是否开始累计时长
 	liveStartedAt        atomic.Int64         // 直播开始时间戳
 }
@@ -242,7 +243,7 @@ func (v *Viewer) StartMessageReader() {
 
 // Write 将用户的发送的数据写入一个环形缓冲区
 func (v *Viewer) Write(b []byte) {
-	if v.Room == nil || !v.Room.IsOpen() {
+	if v == nil || v.closed.Load() || v.Room == nil || !v.Room.IsOpen() {
 		return
 	}
 	buf := make([]byte, len(b))
@@ -322,6 +323,9 @@ func (v *Viewer) getSendRoomBufSize() int64 {
 func (v *Viewer) tryResizeSendBuffer() {
 	v.sendRoomBufMu.Lock()
 	defer v.sendRoomBufMu.Unlock()
+	if v.closed.Load() {
+		return
+	}
 
 	// 再次检查，避免并发调整
 	currentSize := int(v.getSendRoomBufSize())
@@ -637,7 +641,7 @@ func (v *Viewer) processNormalMessages() {
 
 // 通过WebSocket发送消息
 func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
-	if v == nil {
+	if v == nil || v.closed.Load() {
 		log.Printf("Viewer instance is nil, skip sending messages")
 		return
 	}
@@ -730,50 +734,47 @@ func (v *Viewer) Ping(rate time.Duration) {
 	}
 }
 
-// Close 关闭观众连接，及相关资源
+// Close 关闭观众连接及相关资源。该方法可由关房、离房、网络错误和心跳冲突路径并发调用。
 func (v *Viewer) Close() {
-	// 加锁保护，避免重复关闭
-	if !v.mu.TryLock() {
-		return // 如果正在关闭中，直接返回
+	if v == nil || !v.closed.CompareAndSwap(false, true) {
+		return
 	}
-	defer v.mu.Unlock()
 
-	// 业务回调
-	if v.onLeaveCallback != nil {
+	// 先停止本 Viewer 的协程，随后关闭连接以中断可能阻塞的 WebSocket 读取。
+	if v.viewerCtxCancel != nil {
+		v.viewerCtxCancel()
+	}
+	if v.Conn != nil {
+		_ = v.Conn.Close()
+	}
+
+	// 与扩容路径串行化，防止关闭期间替换发送缓冲区切片。
+	v.sendRoomBufMu.Lock()
+	for i := range v.sendRoomSlots {
+		v.sendRoomSlots[i].Store(nil)
+	}
+	v.sendRoomBufMu.Unlock()
+
+	// 缓冲槽使用原子指针，因此与仍在退出中的收发协程并发时安全。
+	for i := range v.roomBroadcastSlots {
+		v.roomBroadcastSlots[i].Store(nil)
+	}
+	for i := range v.highPrioritySlots {
+		v.highPrioritySlots[i].Store(nil)
+	}
+
+	v.mu.RLock()
+	callback := v.onLeaveCallback
+	v.mu.RUnlock()
+	if callback != nil {
 		go func() {
 			defer func() {
 				if err := recover(); err != nil {
 					log.Printf("Viewer onLeaveCallback panic recovered: %v", err)
 				}
 			}()
-			v.onLeaveCallback(v)
+			callback(v)
 		}()
-	}
-
-	// 取消上下文，触发 ReadMsgFromRoom 中的取消逻辑
-	if v.viewerCtxCancel != nil {
-		v.viewerCtxCancel()
-	}
-
-	// 关闭WebSocket连接
-	if v.Conn != nil {
-		v.Conn.Close()
-		v.Conn = nil
-	}
-
-	// 清理用户发送消息缓冲区
-	for i := range v.sendRoomSlots {
-		v.sendRoomSlots[i].Store(nil)
-	}
-
-	// 清理房间广播消息缓冲区
-	for i := range v.roomBroadcastSlots {
-		v.roomBroadcastSlots[i].Store(nil)
-	}
-
-	// 清理高优先级消息缓冲区
-	for i := range v.highPrioritySlots {
-		v.highPrioritySlots[i].Store(nil)
 	}
 }
 
@@ -878,9 +879,14 @@ func (v *Viewer) StorePreviousSessionTime() {
 	}
 }
 
-// SetOnLeaveCallback 设置退出回调
+// SetOnLeaveCallback 设置退出回调。
 func (v *Viewer) SetOnLeaveCallback(callback func(viewer *Viewer)) {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
 	v.onLeaveCallback = callback
+	v.mu.Unlock()
 }
 
 // StartWatchDuration 开始累计观看时长
