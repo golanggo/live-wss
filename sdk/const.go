@@ -16,8 +16,9 @@ const (
 	Live_Online_User_Owner  = "{%v:own_live:%v}:online_user_owner"       // 在线用户到服务实例的归属 Hash
 	Live_Online_User_Expiry = "{%v:own_live:%v}:online_user_expiry"      // 各在线用户租约过期时间 ZSet
 
-	Live_Online_Room_Max        = "{%v:own_live:%v}:online_room_max"           // 分布式房间统一容量
-	Live_Online_User_Peak_Count = "{%v:own_live:%v}:online_user_peak_count:%v" // 指定时间区间内最高在线人数，最后一个参数为区间开始毫秒时间戳
+	Live_Online_Room_Max            = "{%v:own_live:%v}:online_room_max"           // 分布式房间统一容量
+	Live_Online_User_Peak_Count     = "{%v:own_live:%v}:online_user_peak_count:%v" // 指定时间区间内最高在线人数，最后一个参数为区间开始毫秒时间戳
+	Live_Online_User_Peak_Max_Count = "%v:own_live:%v:online_user_peak_max_count"  // 指定区间最高在线人数
 
 	Live_Liked_Count      = "%v:own_live:%v:liked_count"       // 点赞数
 	Live_Comment_Count    = "%v:own_live:%v:comment_count"     // 评论数

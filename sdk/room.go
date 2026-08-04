@@ -2,6 +2,8 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -9,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -351,6 +354,10 @@ func (r *Room) Close() {
 		r.storeCurrentOnlineViewerCount(0)
 	}
 	r.flushCurrentOnlineViewerPeak()
+	err = r.SaveLiveOnlineViewerPeak(r.roomCtx, r.startTime.Load().(time.Time), r.endTime.Load().(time.Time))
+	if err != nil {
+		fmt.Printf("获取直播在线观众峰值失败: %v, 房间: %s\n", err, r.roomNumber)
+	}
 
 	// 在分布式状态更新后取消上下文，避免 Redis 操作使用已取消的 context。
 	r.cancelFunc()
@@ -1007,4 +1014,55 @@ func (r *Room) ApplyMessageFilter(msg *MessagePb, limit int64) (*MessagePb, bool
 	}
 
 	return filteredMsg, allow
+}
+
+// LiveOnlineViewerPeak 描述一场直播中最高在线人数所在的区间。
+type LiveOnlineViewerPeak struct {
+	LiveStart time.Time        `json:"live_start"`
+	LiveEnd   time.Time        `json:"live_end"`
+	Peak      OnlineViewerPeak `json:"peak"`
+	HasData   bool             `json:"has_data"`
+}
+
+// SaveLiveOnlineViewerPeak 汇总 [liveStart, liveEnd) 内所有时间桶的峰值。
+func (r *Room) SaveLiveOnlineViewerPeak(ctx context.Context, liveStart time.Time, liveEnd time.Time) error {
+	result := LiveOnlineViewerPeak{
+		LiveStart: liveStart,
+		LiveEnd:   liveEnd,
+	}
+	if !liveEnd.After(liveStart) {
+		return fmt.Errorf("直播结束时间必须晚于开始时间")
+	}
+
+	interval := r.GetOnlinePeakInterval()
+	firstWindow := liveStart.Truncate(interval)
+	// 用结束时刻前 1ns 定位最后一个有效时间桶，保证区间为左闭右开。
+	lastWindow := liveEnd.Add(-time.Nanosecond).Truncate(interval)
+
+	for windowStart := firstWindow; !windowStart.After(lastWindow); windowStart = windowStart.Add(interval) {
+		peak, err := r.GetOnlineViewerPeak(ctx, windowStart)
+		if err != nil {
+			// 某个桶无人在线、已被清理或尚未写入时，按 0 处理。
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return fmt.Errorf("查询区间峰值 %s: %w", windowStart.Format(time.RFC3339), err)
+		}
+		if !result.HasData || peak.Count > result.Peak.Count {
+			result.Peak = peak
+			result.HasData = true
+		}
+	}
+	if r.dataSource == nil {
+		return fmt.Errorf("数据源未初始化")
+	}
+	jsonData, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("序列化 LiveOnlineViewerPeak 失败: %w", err)
+	}
+	key := fmt.Sprintf(Live_Online_User_Peak_Max_Count, r.firmUUID, r.roomNumber)
+	if err := r.dataSource.Store(r.roomCtx, key, string(jsonData), 14*24*60*60); err != nil {
+		log.Printf("存储最高在线人数失败: %v, 房间: %s", err, r.roomNumber)
+	}
+	return nil
 }

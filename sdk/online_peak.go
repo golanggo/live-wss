@@ -10,9 +10,9 @@ import (
 
 // OnlineViewerPeak 描述一个统计区间内的最高实时在线人数。
 type OnlineViewerPeak struct {
-	WindowStart time.Time
-	WindowEnd   time.Time
-	Count       uint32
+	WindowStart time.Time `json:"window_start"`
+	WindowEnd   time.Time `json:"window_end"`
+	Count       uint32    `json:"count"`
 }
 
 // collectOnlineViewerPeak 在自然时间边界滚动统计区间。
