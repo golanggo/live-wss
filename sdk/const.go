@@ -18,7 +18,7 @@ const (
 
 	Live_Online_Room_Max            = "{%v:own_live:%v}:online_room_max"           // 分布式房间统一容量
 	Live_Online_User_Peak_Count     = "{%v:own_live:%v}:online_user_peak_count:%v" // 指定时间区间内最高在线人数，最后一个参数为区间开始毫秒时间戳
-	Live_Online_User_Peak_Max_Count = "%v:own_live:%v:online_user_peak_max_count"  // 指定区间最高在线人数
+	Live_Online_User_Peak_Max_Count = "%v:own_live:%v:online_user_peak_max_count"  // 直播周期内所有统计区间的最高在线人数
 
 	Live_Liked_Count      = "%v:own_live:%v:liked_count"       // 点赞数
 	Live_Comment_Count    = "%v:own_live:%v:comment_count"     // 评论数

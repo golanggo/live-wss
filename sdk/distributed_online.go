@@ -70,6 +70,9 @@ func (r *Room) syncOnlineViewerPresence(
 
 	r.distributedOnlineViewer.Store(globalCount)
 	r.observeOnlineViewerCount(time.Now(), globalCount)
+	// 每次 Redis 原子会话同步后的全局人数都是整场最大值的候选值。
+	// 该写入使用 StoreMax，跨实例的较小值不会覆盖既有高峰。
+	r.persistLiveOnlineViewerPeakMax(globalCount)
 	return globalCount, status, rejectedViewerIDs, nil
 }
 

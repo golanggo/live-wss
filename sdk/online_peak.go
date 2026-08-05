@@ -82,6 +82,59 @@ func (r *Room) persistOnlineViewerPeak(windowStart time.Time, peak uint32) {
 	if err != nil {
 		log.Printf("存储区间最高在线人数失败: %v, 房间: %s, 区间开始: %s", err, r.roomNumber, windowStart.Format(time.RFC3339))
 	}
+
+	// 该键保存本场直播内所有时间桶的最大值，而非当前桶的值。
+	// Redis 数据源使用 Lua 原子最大值写入，多个服务实例不会以较小值覆盖较大值。
+	r.persistLiveOnlineViewerPeakMax(peak)
+}
+
+// persistLiveOnlineViewerPeakMax 更新本场直播已持久化的最大区间峰值。
+func (r *Room) persistLiveOnlineViewerPeakMax(peak uint32) {
+	if err := r.storeLiveOnlineViewerPeakMax(r.roomCtx, peak); err != nil {
+		log.Printf("存储直播最高在线人数失败: %v, 房间: %s", err, r.roomNumber)
+	}
+}
+
+// storeLiveOnlineViewerPeakMax 原子保留本场直播各时间桶中的最大在线人数。
+// MaxValueDataSource 会在每次写入时续期，避免长直播在高峰后因不再创新高而让键提前过期。
+func (r *Room) storeLiveOnlineViewerPeakMax(ctx context.Context, peak uint32) error {
+	if r.dataSource == nil {
+		return fmt.Errorf("房间数据源未初始化")
+	}
+	if ctx == nil {
+		ctx = r.roomCtx
+	}
+
+	key := LiveOnlineViewerPeakMaxKey(r.firmUUID, r.roomNumber)
+	if maxStore, ok := r.dataSource.(MaxValueDataSource); ok {
+		if err := maxStore.StoreMax(ctx, key, peak, r.onlinePeakRetention); err != nil {
+			return err
+		}
+		r.recordLiveOnlineViewerPeakMax(peak)
+		return nil
+	}
+
+	// 兼容旧的自定义 DataSource：同一 Room 进程内只允许更大值覆盖。
+	// 生产分布式部署必须实现 MaxValueDataSource，才能获得跨实例原子性。
+	r.onlinePeakMaxMu.Lock()
+	defer r.onlinePeakMaxMu.Unlock()
+	if peak <= r.onlinePeakMaxCount.Load() {
+		return nil
+	}
+	if err := r.dataSource.Store(ctx, key, peak, r.onlinePeakRetention); err != nil {
+		return err
+	}
+	r.onlinePeakMaxCount.Store(peak)
+	return nil
+}
+
+func (r *Room) recordLiveOnlineViewerPeakMax(peak uint32) {
+	for {
+		current := r.onlinePeakMaxCount.Load()
+		if peak <= current || r.onlinePeakMaxCount.CompareAndSwap(current, peak) {
+			return
+		}
+	}
 }
 
 // storeOnlineViewerSummary 持久化当前在线人数，并刷新当前区间峰值。
@@ -152,6 +205,31 @@ func (r *Room) GetOnlineViewerPeak(ctx context.Context, at time.Time) (OnlineVie
 // OnlineViewerPeakKey 返回指定时间桶对应的数据源键。
 func OnlineViewerPeakKey(firmUUID, roomNumber string, windowStart time.Time) string {
 	return fmt.Sprintf(Live_Online_User_Peak_Count, firmUUID, roomNumber, windowStart.UnixMilli())
+}
+
+// LiveOnlineViewerPeakMaxKey 返回本场直播所有时间桶中的最高在线人数键。
+func LiveOnlineViewerPeakMaxKey(firmUUID, roomNumber string) string {
+	return fmt.Sprintf(Live_Online_User_Peak_Max_Count, firmUUID, roomNumber)
+}
+
+// GetLiveOnlineViewerPeakMax 查询本场直播所有时间桶的最高在线人数。
+func (r *Room) GetLiveOnlineViewerPeakMax(ctx context.Context) (uint32, error) {
+	if r.dataSource == nil {
+		return 0, fmt.Errorf("房间数据源未初始化")
+	}
+	if ctx == nil {
+		ctx = r.roomCtx
+	}
+
+	value, err := r.dataSource.Get(ctx, LiveOnlineViewerPeakMaxKey(r.firmUUID, r.roomNumber))
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("解析直播最高在线人数失败: %w", err)
+	}
+	return uint32(parsed), nil
 }
 
 // GetOnlinePeakInterval 获取房间当前使用的峰值统计区间。

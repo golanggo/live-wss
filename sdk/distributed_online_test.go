@@ -131,6 +131,18 @@ func (d *distributedMemoryDataSource) SyncOnlineViewerPresence(
 	return globalCount, status, rejected, nil
 }
 
+// StoreMax 模拟 Redis Lua 的原子最大值语义，供跨实例最高峰值测试使用。
+func (d *distributedMemoryDataSource) StoreMax(_ context.Context, key string, value uint32, duration time.Duration) error {
+	d.memoryDataSource.mu.Lock()
+	defer d.memoryDataSource.mu.Unlock()
+	current, _ := strconv.ParseUint(d.memoryDataSource.values[key], 10, 32)
+	if uint64(value) > current {
+		d.memoryDataSource.values[key] = strconv.FormatUint(uint64(value), 10)
+	}
+	d.memoryDataSource.retention[key] = duration
+	return nil
+}
+
 func (d *distributedMemoryDataSource) setTotalCount(key string, count uint32) {
 	d.memoryDataSource.mu.Lock()
 	d.memoryDataSource.values[key] = strconv.FormatUint(uint64(count), 10)
@@ -407,5 +419,40 @@ func TestDistributedHeartbeatRebuildsLostPresenceState(t *testing.T) {
 	}
 	if got := room.GetLocalOnlineViewerCount(); got != 1 {
 		t.Fatalf("重建丢失状态后的本地在线人数 = %d, want 1", got)
+	}
+}
+
+func TestDistributedLiveOnlineViewerPeakMaxKeepsGlobalMaximum(t *testing.T) {
+	dataSource := newDistributedMemoryDataSource()
+	room1 := newDistributedTestRoom(t, dataSource, "distributed-peak-max", 10, time.Minute)
+	room2 := newDistributedTestRoom(t, dataSource, "distributed-peak-max", 10, time.Minute)
+	defer room1.Close()
+	defer room2.Close()
+
+	viewer1 := NewViewer(room1.GetRoomCtx(), "peak-max-viewer-1", "观众1", nil)
+	viewer2 := NewViewer(room2.GetRoomCtx(), "peak-max-viewer-2", "观众2", nil)
+	viewer3 := NewViewer(room1.GetRoomCtx(), "peak-max-viewer-3", "观众3", nil)
+	for _, item := range []struct {
+		room   *Room
+		viewer *Viewer
+	}{
+		{room1, viewer1},
+		{room2, viewer2},
+		{room1, viewer3},
+	} {
+		if err := item.room.JoinRoom(item.viewer); err != nil {
+			t.Fatalf("JoinRoom() error = %v", err)
+		}
+	}
+
+	room1.LeaveRoom(viewer1)
+	room2.LeaveRoom(viewer2)
+
+	got, err := room1.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() error = %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("跨实例整场最高在线人数 = %d, want 3", got)
 	}
 }

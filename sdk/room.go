@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -67,6 +66,8 @@ type Room struct {
 	onlinePeakMu          sync.Mutex
 	onlinePeakWindowStart time.Time
 	onlinePeakCount       uint32
+	onlinePeakMaxMu       sync.Mutex
+	onlinePeakMaxCount    atomic.Uint32 // 当前直播周期内已成功持久化的最高区间峰值
 
 	likeCount     atomic.Uint32 // 点赞数
 	lastLikeCount atomic.Uint32 // 上一次统计点赞数
@@ -354,11 +355,6 @@ func (r *Room) Close() {
 		r.storeCurrentOnlineViewerCount(0)
 	}
 	r.flushCurrentOnlineViewerPeak()
-	err = r.SaveLiveOnlineViewerPeak(r.roomCtx, r.startTime.Load().(time.Time), r.endTime.Load().(time.Time))
-	if err != nil {
-		fmt.Printf("获取直播在线观众峰值失败: %v, 房间: %s\n", err, r.roomNumber)
-	}
-
 	// 在分布式状态更新后取消上下文，避免 Redis 操作使用已取消的 context。
 	r.cancelFunc()
 
@@ -1024,45 +1020,59 @@ type LiveOnlineViewerPeak struct {
 	HasData   bool             `json:"has_data"`
 }
 
-// SaveLiveOnlineViewerPeak 汇总 [liveStart, liveEnd) 内所有时间桶的峰值。
+// SaveLiveOnlineViewerPeak 汇总 [liveStart, liveEnd) 内所有时间桶的峰值，
+// 并将最大数值写入 Live_Online_User_Peak_Max_Count。
+// 即使多个实例同时执行，RedisDataSource 也会通过 StoreMax 保留更大的值。
 func (r *Room) SaveLiveOnlineViewerPeak(ctx context.Context, liveStart time.Time, liveEnd time.Time) error {
-	result := LiveOnlineViewerPeak{
-		LiveStart: liveStart,
-		LiveEnd:   liveEnd,
-	}
 	if !liveEnd.After(liveStart) {
 		return fmt.Errorf("直播结束时间必须晚于开始时间")
+	}
+	if r.dataSource == nil {
+		return fmt.Errorf("数据源未初始化")
+	}
+	if ctx == nil {
+		ctx = r.roomCtx
 	}
 
 	interval := r.GetOnlinePeakInterval()
 	firstWindow := liveStart.Truncate(interval)
 	// 用结束时刻前 1ns 定位最后一个有效时间桶，保证区间为左闭右开。
 	lastWindow := liveEnd.Add(-time.Nanosecond).Truncate(interval)
+	var maxCount uint32
 
 	for windowStart := firstWindow; !windowStart.After(lastWindow); windowStart = windowStart.Add(interval) {
 		peak, err := r.GetOnlineViewerPeak(ctx, windowStart)
 		if err != nil {
-			// 某个桶无人在线、已被清理或尚未写入时，按 0 处理。
+			// 某个桶无人在线、已过期或尚未写入时，按 0 处理。
 			if errors.Is(err, redis.Nil) {
 				continue
 			}
 			return fmt.Errorf("查询区间峰值 %s: %w", windowStart.Format(time.RFC3339), err)
 		}
-		if !result.HasData || peak.Count > result.Peak.Count {
-			result.Peak = peak
-			result.HasData = true
+		if peak.Count > maxCount {
+			maxCount = peak.Count
 		}
 	}
+	return r.storeLiveOnlineViewerPeakMax(ctx, maxCount)
+}
+
+// ResetLiveOnlineViewerPeakMax 在一场新直播开始前清零最高峰值键。
+// 同一 roomNumber 复播时，必须由直播编排服务在所有实例接受新用户前只调用一次；
+// 运行中的直播不可调用此方法，否则会清除已有统计结果。
+func (r *Room) ResetLiveOnlineViewerPeakMax(ctx context.Context) error {
 	if r.dataSource == nil {
-		return fmt.Errorf("数据源未初始化")
+		return fmt.Errorf("房间数据源未初始化")
 	}
-	jsonData, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("序列化 LiveOnlineViewerPeak 失败: %w", err)
+	if ctx == nil {
+		ctx = r.roomCtx
 	}
-	key := fmt.Sprintf(Live_Online_User_Peak_Max_Count, r.firmUUID, r.roomNumber)
-	if err := r.dataSource.Store(r.roomCtx, key, string(jsonData), 14*24*60*60); err != nil {
-		log.Printf("存储最高在线人数失败: %v, 房间: %s", err, r.roomNumber)
+
+	r.onlinePeakMaxMu.Lock()
+	defer r.onlinePeakMaxMu.Unlock()
+	key := LiveOnlineViewerPeakMaxKey(r.firmUUID, r.roomNumber)
+	if err := r.dataSource.Store(ctx, key, uint32(0), r.onlinePeakRetention); err != nil {
+		return fmt.Errorf("重置直播最高在线人数失败: %w", err)
 	}
+	r.onlinePeakMaxCount.Store(0)
 	return nil
 }

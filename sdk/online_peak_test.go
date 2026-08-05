@@ -266,3 +266,144 @@ func TestOnlineViewerPeakCollectorUsesConfiguredInterval(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestLiveOnlineViewerPeakMaxKeepsHighestValue(t *testing.T) {
+	const interval = 5 * time.Minute
+	const retention = 24 * time.Hour
+
+	room, err := NewRoomWithConfig(context.Background(), "最高峰值房间", "room-peak-max", 100, "firm-peak-max", RoomConfig{
+		OnlinePeakInterval:  interval,
+		OnlinePeakRetention: retention,
+	})
+	if err != nil {
+		t.Fatalf("NewRoomWithConfig() error = %v", err)
+	}
+	dataSource := newMemoryDataSource()
+	room.dataSource = dataSource
+	defer room.Close()
+
+	firstWindow := time.Date(2026, 8, 5, 10, 0, 0, 0, time.Local).Truncate(interval)
+	room.persistOnlineViewerPeak(firstWindow, 7)
+	room.persistOnlineViewerPeak(firstWindow.Add(interval), 12)
+	room.persistOnlineViewerPeak(firstWindow.Add(2*interval), 9)
+
+	key := LiveOnlineViewerPeakMaxKey("firm-peak-max", "room-peak-max")
+	if got, want := key, "firm-peak-max:own_live:room-peak-max:online_user_peak_max_count"; got != want {
+		t.Fatalf("最高峰值键 = %q, want %q", got, want)
+	}
+	stored, err := dataSource.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("最高峰值键未写入: %v", err)
+	}
+	if stored != "12" {
+		t.Fatalf("最高峰值键 = %s, want 12", stored)
+	}
+	if got := dataSource.retention[key]; got != retention {
+		t.Fatalf("最高峰值保留时间 = %v, want %v", got, retention)
+	}
+
+	got, err := room.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() error = %v", err)
+	}
+	if got != 12 {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() = %d, want 12", got)
+	}
+
+	// 后续较小的区间峰值不能覆盖已经写入的整场最高值。
+	room.persistOnlineViewerPeak(firstWindow.Add(3*interval), 6)
+	got, err = room.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("第二次 GetLiveOnlineViewerPeakMax() error = %v", err)
+	}
+	if got != 12 {
+		t.Fatalf("较小峰值覆盖后的整场最高值 = %d, want 12", got)
+	}
+}
+
+func TestResetLiveOnlineViewerPeakMax(t *testing.T) {
+	room, err := NewRoomWithConfig(context.Background(), "重置峰值房间", "room-peak-reset", 100, "firm-peak-reset", RoomConfig{})
+	if err != nil {
+		t.Fatalf("NewRoomWithConfig() error = %v", err)
+	}
+	dataSource := newMemoryDataSource()
+	room.dataSource = dataSource
+	defer room.Close()
+
+	room.persistLiveOnlineViewerPeakMax(15)
+	if err := room.ResetLiveOnlineViewerPeakMax(context.Background()); err != nil {
+		t.Fatalf("ResetLiveOnlineViewerPeakMax() error = %v", err)
+	}
+	got, err := room.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() after reset error = %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("重置后的最高峰值 = %d, want 0", got)
+	}
+
+	room.persistLiveOnlineViewerPeakMax(4)
+	got, err = room.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() after new peak error = %v", err)
+	}
+	if got != 4 {
+		t.Fatalf("新直播峰值 = %d, want 4", got)
+	}
+}
+
+func TestCloseFlushesLiveOnlineViewerPeakMax(t *testing.T) {
+	room, err := NewRoomWithConfig(context.Background(), "关房峰值房间", "room-peak-close", 100, "firm-peak-close", RoomConfig{})
+	if err != nil {
+		t.Fatalf("NewRoomWithConfig() error = %v", err)
+	}
+	dataSource := newMemoryDataSource()
+	room.dataSource = dataSource
+
+	room.onlinePeakMu.Lock()
+	room.onlinePeakCount = 11
+	room.onlinePeakMu.Unlock()
+	room.Close()
+
+	got, err := room.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() after Close error = %v", err)
+	}
+	if got != 11 {
+		t.Fatalf("关房补刷后的最高峰值 = %d, want 11", got)
+	}
+}
+
+func TestSaveLiveOnlineViewerPeakStoresNumericMax(t *testing.T) {
+	const interval = 5 * time.Minute
+	room, err := NewRoomWithConfig(context.Background(), "汇总峰值房间", "room-peak-save", 100, "firm-peak-save", RoomConfig{
+		OnlinePeakInterval: interval,
+	})
+	if err != nil {
+		t.Fatalf("NewRoomWithConfig() error = %v", err)
+	}
+	dataSource := newMemoryDataSource()
+	room.dataSource = dataSource
+	defer room.Close()
+
+	start := time.Date(2026, 8, 5, 10, 1, 0, 0, time.Local)
+	firstWindow := start.Truncate(interval)
+	secondWindow := firstWindow.Add(interval)
+	if err := dataSource.Store(context.Background(), OnlineViewerPeakKey("firm-peak-save", "room-peak-save", firstWindow), 3, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := dataSource.Store(context.Background(), OnlineViewerPeakKey("firm-peak-save", "room-peak-save", secondWindow), 9, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := room.SaveLiveOnlineViewerPeak(context.Background(), start, secondWindow.Add(2*time.Minute)); err != nil {
+		t.Fatalf("SaveLiveOnlineViewerPeak() error = %v", err)
+	}
+	got, err := room.GetLiveOnlineViewerPeakMax(context.Background())
+	if err != nil {
+		t.Fatalf("GetLiveOnlineViewerPeakMax() error = %v", err)
+	}
+	if got != 9 {
+		t.Fatalf("汇总写入的最高峰值 = %d, want 9", got)
+	}
+}
