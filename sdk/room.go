@@ -69,6 +69,11 @@ type Room struct {
 	onlinePeakMaxMu       sync.Mutex
 	onlinePeakMaxCount    atomic.Uint32 // 当前直播周期内已成功持久化的最高区间峰值
 
+	commentCodes     map[string]struct{} // 需要统计并发送到 MQ 的评论消息 code
+	commentRetention time.Duration
+	commentPublisher CommentPublisher
+	commentEventSeq  atomic.Uint64
+
 	likeCount     atomic.Uint32 // 点赞数
 	lastLikeCount atomic.Uint32 // 上一次统计点赞数
 
@@ -119,6 +124,9 @@ func NewRoomWithConfig(ctx context.Context, rootName string, roomNumber string, 
 		onlinePeakWindowStart: time.Now().Truncate(config.OnlinePeakInterval),
 		instanceID:            instanceID,
 		onlinePresenceTTL:     config.OnlinePresenceTTL,
+		commentCodes:          makeCommentCodeSet(config.CommentCodes),
+		commentRetention:      config.CommentRetention,
+		commentPublisher:      config.CommentPublisher,
 	}
 	// 初始化 ring buffer 位置
 	room.viewerSendWritePos.Store(0)
@@ -138,7 +146,7 @@ func NewRoomWithConfig(ctx context.Context, rootName string, roomNumber string, 
 
 func (r *Room) sendBatch(messages []*MessagePb) {
 	for _, msg := range messages {
-		if msg == nil || msg.Data == "" {
+		if msg == nil || (msg.Msg == "" && msg.Data == "") {
 			continue
 		}
 		// 写入到 ring buffer
@@ -171,6 +179,7 @@ func (r *Room) writeToMessageRingBuffer(msg *MessagePb) {
 	// 组件规一、维护 ring buffer的一程目标、持一个序列号且制造新消息提验查是否需要
 	bufferMsg := &MessagePb{
 		SendClient: msg.SendClient,
+		MessageId:  msg.MessageId,
 		Code:       msg.Code,
 		Msg:        msg.Msg,
 		Data:       msg.Data,
@@ -355,6 +364,8 @@ func (r *Room) Close() {
 		r.storeCurrentOnlineViewerCount(0)
 	}
 	r.flushCurrentOnlineViewerPeak()
+	// 关播前同步处理尚在房间环形缓冲区中的消息，避免最后 200ms 内的评论遗漏。
+	r.flushPendingMessagesToDataSource()
 	// 在分布式状态更新后取消上下文，避免 Redis 操作使用已取消的 context。
 	r.cancelFunc()
 
@@ -612,16 +623,7 @@ func (r *Room) messageToDataSource() {
 			fmt.Printf("房间 %s messageToDataSource 协程退出（房间上下文取消）\n", r.roomNumber)
 			return // 房间关闭ok退出
 		case <-ticker.C:
-			// 从 ring buffer 读取消息并发送到数据源
-			messages := r.readFromMessageRingBuffer()
-			for _, msg := range messages {
-				if msg != nil && r.dataSource != nil {
-					err := r.dataSource.SendMessage(r.roomCtx, streamKey, msg)
-					if err != nil {
-						fmt.Printf("发送消息到数据源失败: %v\n", err)
-					}
-				}
-			}
+			r.flushPendingMessagesToDataSourceForStream(streamKey)
 		}
 	}
 }

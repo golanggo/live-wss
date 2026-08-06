@@ -27,13 +27,27 @@ type LiveWssSDKConfig struct {
 
 	// OnlinePresenceTTL 分布式在线用户租约过期时间，默认 30 秒。
 	OnlinePresenceTTL time.Duration
+
+	// CommentCodes 指定应统计和保存的评论消息 code；空值使用默认评论事件码。
+	CommentCodes []string
+
+	// CommentRetention 指定评论人数与去重用户集合的 Redis 保留时间；未设置时默认 7 天。
+	CommentRetention time.Duration
+
+	// RabbitMQComment 配置评论内容直发 RabbitMQ。URL 为空时不启用 MQ 发布。
+	RabbitMQComment RabbitMQCommentPublisherConfig
+
+	// CommentPublisher 允许注入自定义评论 MQ 发布器；非空时优先于 RabbitMQComment。
+	CommentPublisher CommentPublisher
 }
 
 // LiveWssSDK 初始化器
 type LiveWssSDK struct {
-	config      *LiveWssSDKConfig
-	roomManager *RoomManager
-	dataSource  DataSource
+	config               *LiveWssSDKConfig
+	roomManager          *RoomManager
+	dataSource           DataSource
+	commentPublisher     CommentPublisher
+	ownsCommentPublisher bool
 }
 
 // NewSDK 创建新的SDK实例
@@ -57,10 +71,26 @@ func NewLiveWssSDK(config *LiveWssSDKConfig) (*LiveWssSDK, error) {
 		OnlinePeakInterval:  config.OnlinePeakInterval,
 		OnlinePeakRetention: config.OnlinePeakRetention,
 		OnlinePresenceTTL:   config.OnlinePresenceTTL,
+		CommentCodes:        config.CommentCodes,
+		CommentRetention:    config.CommentRetention,
 	}.withDefaults()
 	config.OnlinePeakInterval = roomConfig.OnlinePeakInterval
 	config.OnlinePeakRetention = roomConfig.OnlinePeakRetention
 	config.OnlinePresenceTTL = roomConfig.OnlinePresenceTTL
+	config.CommentCodes = append([]string(nil), roomConfig.CommentCodes...)
+	config.CommentRetention = roomConfig.CommentRetention
+
+	commentPublisher := config.CommentPublisher
+	ownsCommentPublisher := false
+	if commentPublisher == nil && config.RabbitMQComment.URL != "" {
+		publisher, err := NewRabbitMQCommentPublisher(config.RabbitMQComment)
+		if err != nil {
+			fmt.Printf("创建RabbitMQ评论发布器失败: %v", err)
+			return nil, err
+		}
+		commentPublisher = publisher
+		ownsCommentPublisher = true
+	}
 
 	// 创建Redis数据源
 	redisDataSource := NewRedisDataSource(config.RedisClient)
@@ -69,9 +99,11 @@ func NewLiveWssSDK(config *LiveWssSDKConfig) (*LiveWssSDK, error) {
 	roomManager := NewRoomManager(config.MaxRooms)
 
 	liveWssSDK := &LiveWssSDK{
-		config:      config,
-		roomManager: roomManager,
-		dataSource:  redisDataSource,
+		config:               config,
+		roomManager:          roomManager,
+		dataSource:           redisDataSource,
+		commentPublisher:     commentPublisher,
+		ownsCommentPublisher: ownsCommentPublisher,
 	}
 
 	return liveWssSDK, nil
@@ -110,6 +142,9 @@ func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber string, roomName
 		OnlinePeakInterval:  s.config.OnlinePeakInterval,
 		OnlinePeakRetention: s.config.OnlinePeakRetention,
 		OnlinePresenceTTL:   s.config.OnlinePresenceTTL,
+		CommentCodes:        s.config.CommentCodes,
+		CommentRetention:    s.config.CommentRetention,
+		CommentPublisher:    s.commentPublisher,
 	})
 	if err != nil {
 		return err
@@ -139,8 +174,9 @@ func (s *LiveWssSDK) GetRoomManagerInfo() string {
 
 // Close 关闭SDK
 func (s *LiveWssSDK) Close() {
-	// 这里可以添加清理逻辑，如关闭Redis连接等
-	// 目前主要依赖上下文取消机制
+	if s.ownsCommentPublisher && s.commentPublisher != nil {
+		_ = s.commentPublisher.Close()
+	}
 }
 
 func (s *LiveWssSDK) GetRooms() map[string]*Room {

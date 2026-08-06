@@ -34,6 +34,38 @@ type MaxValueDataSource interface {
 	StoreMax(ctx context.Context, key string, value uint32, duration time.Duration) error
 }
 
+// CommentStatisticsDataSource 是数据源可选实现的评论人数统计能力。
+// RecordCommentUser 必须按 viewerID 原子去重，并返回本场直播的评论人数。
+type CommentStatisticsDataSource interface {
+	RecordCommentUser(ctx context.Context, userSetKey, userCountKey, viewerID string, retention time.Duration) (commentUserCount uint32, err error)
+	ResetCommentUsers(ctx context.Context, userSetKey, userCountKey string) error
+}
+
+// CommentEvent 是写入 RabbitMQ 的评论事件契约。消费者应以 EventID 做幂等落库。
+type CommentEvent struct {
+	MessageID     string    `json:"message_id"`
+	FirmUUID      string    `json:"firm_uuid"`
+	RoomID        string    `json:"room_id"`
+	ViewerID      string    `json:"viewer_id"`
+	NickName      string    `json:"nick_name"`
+	Avatar        string    `json:"avatar"`
+	UserLevel     string    `json:"user_level"`
+	Code          string    `json:"code"`
+	Data          string    `json:"data"`
+	CreatedAt     time.Time `json:"created_at"`
+	Timestamp     int64     `json:"timestamp"`
+	ShopUUID      int64     `json:"shop_uuid,omitempty"`
+	ShopName      string    `json:"shop_name,omitempty"`
+	ShopClerkUUID int64     `json:"shop_clerk_uuid,omitempty"`
+	ShopClerkName string    `json:"shop_clerk_name,omitempty"`
+}
+
+// CommentPublisher 是评论 MQ 发布器的可选能力。PublishComment 成功返回时表示 Broker 已确认持久化。
+type CommentPublisher interface {
+	PublishComment(ctx context.Context, event CommentEvent) error
+	Close() error
+}
+
 type OnlineViewerOperation string
 
 const (

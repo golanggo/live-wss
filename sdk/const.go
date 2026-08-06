@@ -20,8 +20,11 @@ const (
 	Live_Online_User_Peak_Count     = "{%v:own_live:%v}:online_user_peak_count:%v" // 指定时间区间内最高在线人数，最后一个参数为区间开始毫秒时间戳
 	Live_Online_User_Peak_Max_Count = "%v:own_live:%v:online_user_peak_max_count"  // 直播周期内所有统计区间的最高在线人数
 
-	Live_Liked_Count      = "%v:own_live:%v:liked_count"       // 点赞数
-	Live_Comment_Count    = "%v:own_live:%v:comment_count"     // 评论数
+	Live_Liked_Count        = "%v:own_live:%v:liked_count"          // 点赞数
+	Live_Comment_Count      = "%v:own_live:%v:comment_count"        // 评论条数
+	Live_Comment_User_Count = "{%v:own_live:%v}:comment_user_count" // 去重后的评论人数
+	Live_Comment_User_Set   = "{%v:own_live:%v}:comment_user_ids"   // 已评论用户 ID 集合
+
 	Live_Msg_Broadcast    = "%v:own_live:%v:broadcast"         // 消息广播
 	Live_Msg_Broadcast_HP = "%v:own_live:%v:broadcast:hp"      // 高优先级消息广播
 	Live_WatchDuration    = "%v:own_live:%v:watch_duration:%v" // 进入直播观看时长
@@ -30,6 +33,7 @@ const (
 
 const (
 	Code_Event_User_Click_Like   = "event_user_click_like"   // 用户点赞
+	Code_Event_Send_Msg          = "event_send_msg"          // 用户发送评论
 	Code_Event_Anchor_Mute       = "event_anchor_mute"       // 主播禁言用户
 	Code_Event_Anchor_UnMute     = "event_anchor_unmute"     // 主播解禁禁言用户
 	Code_Event_Anchor_Ban        = "event_anchor_ban"        // 主播封禁用户
