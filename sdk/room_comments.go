@@ -115,6 +115,7 @@ func (r *Room) newCommentEvent(message *MessagePb) CommentEvent {
 	shopName := ""
 	var shopClerkUUID int64
 	shopClerkName := ""
+	var isAnchorInt64 int64
 	if viewer != nil {
 		userAvatar, ok := viewer.GetCustomData("UserAvatar")
 		if ok {
@@ -136,6 +137,13 @@ func (r *Room) newCommentEvent(message *MessagePb) CommentEvent {
 		if ok {
 			shopClerkName = shopClerkNameStr.(string)
 		}
+		isAnchor, ok := viewer.GetCustomData("IsAnchor")
+		if !ok {
+			isAnchorInt64 = 0
+		}
+		if isAnchor.(bool) {
+			isAnchorInt64 = 1
+		}
 	}
 	return CommentEvent{
 		MessageID:     eventID,
@@ -153,6 +161,7 @@ func (r *Room) newCommentEvent(message *MessagePb) CommentEvent {
 		ShopName:      shopName,
 		ShopClerkUUID: shopClerkUUID,
 		ShopClerkName: shopClerkName,
+		IsAnchor:      isAnchorInt64,
 	}
 }
 

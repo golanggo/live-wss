@@ -65,6 +65,7 @@ type CommentEvent struct {
 	ShopName      string    `json:"shop_name,omitempty"`
 	ShopClerkUUID int64     `json:"shop_clerk_uuid,omitempty"`
 	ShopClerkName string    `json:"shop_clerk_name,omitempty"`
+	IsAnchor      int64     `json:"is_anchor"`
 }
 
 // CommentPublisher 是评论 MQ 发布器的可选能力。PublishComment 成功返回时表示 Broker 已确认持久化。
