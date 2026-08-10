@@ -63,6 +63,7 @@ type Room struct {
 
 	onlinePeakInterval    time.Duration // 最高在线人数统计区间
 	onlinePeakRetention   time.Duration // 区间峰值数据保留时间，0 表示不过期
+	totalViewerRetention  time.Duration // 累计去重观看人数数据保留时间
 	onlinePeakMu          sync.Mutex
 	onlinePeakWindowStart time.Time
 	onlinePeakCount       uint32
@@ -121,6 +122,7 @@ func NewRoomWithConfig(ctx context.Context, rootName string, roomNumber string, 
 		cancelFunc:            cancelFunc,
 		onlinePeakInterval:    config.OnlinePeakInterval,
 		onlinePeakRetention:   config.OnlinePeakRetention,
+		totalViewerRetention:  config.TotalViewerRetention,
 		onlinePeakWindowStart: time.Now().Truncate(config.OnlinePeakInterval),
 		instanceID:            instanceID,
 		onlinePresenceTTL:     config.OnlinePresenceTTL,

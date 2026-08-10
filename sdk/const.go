@@ -17,6 +17,8 @@ const (
 	Live_Online_User_Expiry = "{%v:own_live:%v}:online_user_expiry"      // 各在线用户租约过期时间 ZSet
 
 	Live_Online_Room_Max            = "{%v:own_live:%v}:online_room_max"           // 分布式房间统一容量
+	Live_Total_User_Count           = "{%v:own_live:%v}:total_user_count"          // 本场直播累计去重观看人数
+	Live_Total_User_Set             = "{%v:own_live:%v}:total_user_ids"            // 本场直播累计去重观看用户 ID 集合
 	Live_Online_User_Peak_Count     = "{%v:own_live:%v}:online_user_peak_count:%v" // 指定时间区间内最高在线人数，最后一个参数为区间开始毫秒时间戳
 	Live_Online_User_Peak_Max_Count = "%v:own_live:%v:online_user_peak_max_count"  // 直播周期内所有统计区间的最高在线人数
 

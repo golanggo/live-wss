@@ -182,12 +182,15 @@ func (r *RedisDataSourceAdapter) SyncOnlineViewerPresence(
 	totalCountKey string,
 	roomMaxKey string,
 	peakCountKey string,
+	totalViewerSetKey string,
+	totalViewerCountKey string,
 	instanceID string,
 	operation sdk.OnlineViewerOperation,
 	viewerIDs []string,
 	maxViewer uint32,
 	ttl time.Duration,
 	peakRetention time.Duration,
+	totalViewerRetention time.Duration,
 ) (uint32, sdk.OnlineViewerSyncStatus, []string, error) {
 	return r.stream.SyncOnlineViewerPresence(
 		ctx,
@@ -196,12 +199,15 @@ func (r *RedisDataSourceAdapter) SyncOnlineViewerPresence(
 		totalCountKey,
 		roomMaxKey,
 		peakCountKey,
+		totalViewerSetKey,
+		totalViewerCountKey,
 		instanceID,
 		operation,
 		viewerIDs,
 		maxViewer,
 		ttl,
 		peakRetention,
+		totalViewerRetention,
 	)
 }
 

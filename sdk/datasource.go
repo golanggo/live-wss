@@ -34,6 +34,13 @@ type MaxValueDataSource interface {
 	StoreMax(ctx context.Context, key string, value uint32, duration time.Duration) error
 }
 
+// TotalViewerDataSource 是数据源可选实现的直播累计去重观看人数能力。
+// RecordTotalViewer 必须按 viewerID 原子去重，并返回本场直播累计观看人数。
+type TotalViewerDataSource interface {
+	RecordTotalViewer(ctx context.Context, userSetKey, userCountKey, viewerID string, retention time.Duration) (totalViewerCount uint32, err error)
+	ResetTotalViewers(ctx context.Context, userSetKey, userCountKey string) error
+}
+
 // CommentStatisticsDataSource 是数据源可选实现的评论人数统计能力。
 // RecordCommentUser 必须按 viewerID 原子去重，并返回本场直播的评论人数。
 type CommentStatisticsDataSource interface {
@@ -90,14 +97,18 @@ type DistributedOnlineDataSource interface {
 		ctx context.Context,
 		userOwnerKey string,
 		userExpiryKey string,
-		totalCountKey string,
+		onlineCountKey string,
 		roomMaxKey string,
 		peakCountKey string,
+		totalViewerSetKey string,
+		totalViewerCountKey string,
+
 		instanceID string,
 		operation OnlineViewerOperation,
 		viewerIDs []string,
 		maxViewer uint32,
 		ttl time.Duration,
 		peakRetention time.Duration,
+		totalViewerRetention time.Duration,
 	) (globalCount uint32, status OnlineViewerSyncStatus, rejectedViewerIDs []string, err error)
 }

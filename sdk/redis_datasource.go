@@ -37,6 +37,17 @@ local viewerIDs = {}
 for i = 1, viewerCount do
 	viewerIDs[i] = ARGV[6 + i]
 end
+local totalViewerRetention = tonumber(ARGV[7 + viewerCount])
+
+local function recordTotalViewer(viewerID)
+	redis.call("SADD", KEYS[6], viewerID)
+	local totalViewerCount = redis.call("SCARD", KEYS[6])
+	redis.call("SET", KEYS[7], totalViewerCount)
+	if totalViewerRetention and totalViewerRetention > 0 then
+		redis.call("PEXPIRE", KEYS[6], totalViewerRetention)
+		redis.call("PEXPIRE", KEYS[7], totalViewerRetention)
+	end
+end
 
 local function storePeak(value)
 	local currentPeak = redis.call("GET", KEYS[5])
@@ -90,6 +101,7 @@ if operation == "join" then
 	end
 	redis.call("HSET", KEYS[1], viewerID, instanceID)
 	redis.call("ZADD", KEYS[2], expiresAt, viewerID)
+	recordTotalViewer(viewerID)
 elseif operation == "leave" then
 	local viewerID = viewerIDs[1]
 	if redis.call("HGET", KEYS[1], viewerID) == instanceID then
@@ -108,6 +120,7 @@ elseif operation == "heartbeat" then
 			else
 				redis.call("HSET", KEYS[1], viewerID, instanceID)
 				redis.call("ZADD", KEYS[2], expiresAt, viewerID)
+				recordTotalViewer(viewerID)
 			end
 		else
 			redis.call("ZADD", KEYS[2], expiresAt, viewerID)
@@ -264,14 +277,17 @@ func (s *RedisDataSource) SyncOnlineViewerPresence(
 	totalCountKey string,
 	roomMaxKey string,
 	peakCountKey string,
+	totalViewerSetKey string,
+	totalViewerCountKey string,
 	instanceID string,
 	operation OnlineViewerOperation,
 	viewerIDs []string,
 	maxViewer uint32,
 	ttl time.Duration,
 	peakRetention time.Duration,
+	totalViewerRetention time.Duration,
 ) (uint32, OnlineViewerSyncStatus, []string, error) {
-	args := make([]any, 0, 6+len(viewerIDs))
+	args := make([]any, 0, 7+len(viewerIDs))
 	args = append(args,
 		string(operation),
 		instanceID,
@@ -283,11 +299,12 @@ func (s *RedisDataSource) SyncOnlineViewerPresence(
 	for _, viewerID := range viewerIDs {
 		args = append(args, viewerID)
 	}
+	args = append(args, totalViewerRetention.Milliseconds())
 
 	result, err := syncOnlineViewerPresenceScript.Run(
 		ctx,
 		s.rdbClient,
-		[]string{userOwnerKey, userExpiryKey, totalCountKey, roomMaxKey, peakCountKey},
+		[]string{userOwnerKey, userExpiryKey, totalCountKey, roomMaxKey, peakCountKey, totalViewerSetKey, totalViewerCountKey},
 		args...,
 	).Slice()
 	if err != nil {

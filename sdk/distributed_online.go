@@ -23,11 +23,13 @@ func (r *Room) distributedOnlineDataSource() (DistributedOnlineDataSource, bool)
 	return dataSource, ok
 }
 
-func (r *Room) onlinePresenceKeys() (userOwnerKey, userExpiryKey, totalCountKey, roomMaxKey string) {
+func (r *Room) onlinePresenceKeys() (userOwnerKey, userExpiryKey, onlineCountKey, roomMaxKey, totalViewerSetKey, totalViewerCountKey string) {
 	return fmt.Sprintf(Live_Online_User_Owner, r.firmUUID, r.roomNumber),
 		fmt.Sprintf(Live_Online_User_Expiry, r.firmUUID, r.roomNumber),
 		fmt.Sprintf(Live_Online_User_Count, r.firmUUID, r.roomNumber),
-		fmt.Sprintf(Live_Online_Room_Max, r.firmUUID, r.roomNumber)
+		fmt.Sprintf(Live_Online_Room_Max, r.firmUUID, r.roomNumber),
+		LiveTotalViewerSetKey(r.firmUUID, r.roomNumber),
+		LiveTotalViewerCountKey(r.firmUUID, r.roomNumber)
 }
 
 // syncOnlineViewerPresence 原子更新分布式用户会话。调用方必须持有 viewerMux 的读锁或写锁。
@@ -44,25 +46,33 @@ func (r *Room) syncOnlineViewerPresence(
 		}
 		r.distributedOnlineViewer.Store(fallbackLocalCount)
 		r.observeOnlineViewerCount(time.Now(), fallbackLocalCount)
+		if operation == OnlineViewerJoin && len(viewerIDs) == 1 {
+			if err := r.recordTotalViewer(ctx, viewerIDs[0]); err != nil {
+				return fallbackLocalCount, OnlineViewerSyncAccepted, nil, err
+			}
+		}
 		return fallbackLocalCount, OnlineViewerSyncAccepted, nil, nil
 	}
 
-	userOwnerKey, userExpiryKey, totalCountKey, roomMaxKey := r.onlinePresenceKeys()
+	userOwnerKey, userExpiryKey, onlineCountKey, roomMaxKey, totalViewerSetKey, totalViewerCountKey := r.onlinePresenceKeys()
 	peakWindowStart := time.Now().Truncate(r.onlinePeakInterval)
 	peakCountKey := OnlineViewerPeakKey(r.firmUUID, r.roomNumber, peakWindowStart)
 	globalCount, status, rejectedViewerIDs, err := dataSource.SyncOnlineViewerPresence(
 		ctx,
 		userOwnerKey,
 		userExpiryKey,
-		totalCountKey,
+		onlineCountKey,
 		roomMaxKey,
 		peakCountKey,
+		totalViewerSetKey,
+		totalViewerCountKey,
 		r.instanceID,
 		operation,
 		viewerIDs,
 		r.maxViewer,
 		r.onlinePresenceTTL,
 		r.onlinePeakRetention,
+		r.totalViewerRetention,
 	)
 	if err != nil {
 		return r.distributedOnlineViewer.Load(), OnlineViewerSyncAccepted, nil, fmt.Errorf("%w: %w", ErrOnlinePresenceSync, err)

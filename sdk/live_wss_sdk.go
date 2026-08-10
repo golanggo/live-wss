@@ -28,6 +28,9 @@ type LiveWssSDKConfig struct {
 	// OnlinePresenceTTL 分布式在线用户租约过期时间，默认 30 秒。
 	OnlinePresenceTTL time.Duration
 
+	// TotalViewerRetention 指定直播累计去重观看人数的 Redis 保留时间，默认 7 天。
+	TotalViewerRetention time.Duration
+
 	// CommentCodes 指定应统计和保存的评论消息 code；空值使用默认评论事件码。
 	CommentCodes []string
 
@@ -68,15 +71,17 @@ func NewLiveWssSDK(config *LiveWssSDKConfig) (*LiveWssSDK, error) {
 		config.DefaultMaxViewers = 100000 // 默认10万人
 	}
 	roomConfig := RoomConfig{
-		OnlinePeakInterval:  config.OnlinePeakInterval,
-		OnlinePeakRetention: config.OnlinePeakRetention,
-		OnlinePresenceTTL:   config.OnlinePresenceTTL,
-		CommentCodes:        config.CommentCodes,
-		CommentRetention:    config.CommentRetention,
+		OnlinePeakInterval:   config.OnlinePeakInterval,
+		OnlinePeakRetention:  config.OnlinePeakRetention,
+		OnlinePresenceTTL:    config.OnlinePresenceTTL,
+		TotalViewerRetention: config.TotalViewerRetention,
+		CommentCodes:         config.CommentCodes,
+		CommentRetention:     config.CommentRetention,
 	}.withDefaults()
 	config.OnlinePeakInterval = roomConfig.OnlinePeakInterval
 	config.OnlinePeakRetention = roomConfig.OnlinePeakRetention
 	config.OnlinePresenceTTL = roomConfig.OnlinePresenceTTL
+	config.TotalViewerRetention = roomConfig.TotalViewerRetention
 	config.CommentCodes = append([]string(nil), roomConfig.CommentCodes...)
 	config.CommentRetention = roomConfig.CommentRetention
 
@@ -139,12 +144,13 @@ func (s *LiveWssSDK) CreateRoom(ctx context.Context, roomNumber string, roomName
 
 	// 创建房间
 	room, err := NewRoomWithConfig(ctx, roomName, roomNumber, maxViewers, firmUUID, RoomConfig{
-		OnlinePeakInterval:  s.config.OnlinePeakInterval,
-		OnlinePeakRetention: s.config.OnlinePeakRetention,
-		OnlinePresenceTTL:   s.config.OnlinePresenceTTL,
-		CommentCodes:        s.config.CommentCodes,
-		CommentRetention:    s.config.CommentRetention,
-		CommentPublisher:    s.commentPublisher,
+		OnlinePeakInterval:   s.config.OnlinePeakInterval,
+		OnlinePeakRetention:  s.config.OnlinePeakRetention,
+		OnlinePresenceTTL:    s.config.OnlinePresenceTTL,
+		TotalViewerRetention: s.config.TotalViewerRetention,
+		CommentCodes:         s.config.CommentCodes,
+		CommentRetention:     s.config.CommentRetention,
+		CommentPublisher:     s.commentPublisher,
 	})
 	if err != nil {
 		return err
