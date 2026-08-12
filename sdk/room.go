@@ -504,6 +504,10 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 	if !ok {
 		userTags = ""
 	}
+	userAvatar, ok := viewer.GetCustomData("UserAvatar")
+	if !ok {
+		userAvatar = ""
+	}
 
 	rawMessages := viewer.CollectMessages()
 	for _, data := range rawMessages {
@@ -515,10 +519,11 @@ func (r *Room) processSingleViewer(viewerID string, batch *[]*MessagePb) {
 		}
 		messagePb.LiveId = string(r.roomNumber)
 		messagePb.SendClient = &SendClientInfoPb{
-			UserId:   viewer.GetViewerID(),
-			NickName: viewer.GetViewerName(),
-			IsAnchor: isAnchor.(bool),
-			UserTags: userTags.(string),
+			UserId:     viewer.GetViewerID(),
+			NickName:   viewer.GetViewerName(),
+			IsAnchor:   isAnchor.(bool),
+			UserTags:   userTags.(string),
+			UserAvatar: userAvatar.(string),
 		}
 		messagePb.Priority = MessagePriority_LOW
 		messagePb.Timestamp = time.Now().Unix()
@@ -566,6 +571,16 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 			isAnchor = false
 		}
 
+		userAvatar, ok := viewer.GetCustomData("UserAvatar")
+		if !ok {
+			userAvatar = ""
+		}
+
+		userTags, ok := viewer.GetCustomData("UserTags")
+		if !ok {
+			userTags = ""
+		}
+
 		if viewer.sendRoomHasMessage.Load() == 1 {
 			rawMessages := viewer.CollectMessages()
 			for _, data := range rawMessages {
@@ -579,9 +594,11 @@ func (r *Room) processBatch(batch *[]*MessagePb) {
 				}
 				messagePb.LiveId = string(r.roomNumber)
 				messagePb.SendClient = &SendClientInfoPb{
-					UserId:   viewer.GetViewerID(),
-					NickName: viewer.GetViewerName(),
-					IsAnchor: isAnchor.(bool),
+					UserId:     viewer.GetViewerID(),
+					NickName:   viewer.GetViewerName(),
+					IsAnchor:   isAnchor.(bool),
+					UserAvatar: userAvatar.(string),
+					UserTags:   userTags.(string),
 				}
 				messagePb.Priority = MessagePriority_LOW
 				messagePb.Timestamp = time.Now().Unix()
