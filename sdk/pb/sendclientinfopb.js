@@ -75,7 +75,8 @@ userid: jspb.Message.getFieldWithDefault(msg, 2, ""),
 usertags: jspb.Message.getFieldWithDefault(msg, 3, ""),
 isanchor: jspb.Message.getBooleanFieldWithDefault(msg, 4, false),
 ismuted: jspb.Message.getBooleanFieldWithDefault(msg, 5, false),
-istrigerswd: jspb.Message.getBooleanFieldWithDefault(msg, 6, false)
+istrigerswd: jspb.Message.getBooleanFieldWithDefault(msg, 6, false),
+useravatar: jspb.Message.getFieldWithDefault(msg, 7, "")
   };
 
   if (includeInstance) {
@@ -135,6 +136,10 @@ proto.sdk.SendClientInfoPb.deserializeBinaryFromReader = function(msg, reader) {
     case 6:
       var value = /** @type {boolean} */ (reader.readBool());
       msg.setIstrigerswd(value);
+      break;
+    case 7:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setUseravatar(value);
       break;
     default:
       reader.skipField();
@@ -204,6 +209,13 @@ proto.sdk.SendClientInfoPb.serializeBinaryToWriter = function(message, writer) {
   if (f) {
     writer.writeBool(
       6,
+      f
+    );
+  }
+  f = message.getUseravatar();
+  if (f.length > 0) {
+    writer.writeString(
+      7,
       f
     );
   }
@@ -315,6 +327,24 @@ proto.sdk.SendClientInfoPb.prototype.getIstrigerswd = function() {
  */
 proto.sdk.SendClientInfoPb.prototype.setIstrigerswd = function(value) {
   return jspb.Message.setProto3BooleanField(this, 6, value);
+};
+
+
+/**
+ * optional string userAvatar = 7;
+ * @return {string}
+ */
+proto.sdk.SendClientInfoPb.prototype.getUseravatar = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 7, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.sdk.SendClientInfoPb} returns this
+ */
+proto.sdk.SendClientInfoPb.prototype.setUseravatar = function(value) {
+  return jspb.Message.setProto3StringField(this, 7, value);
 };
 
 
