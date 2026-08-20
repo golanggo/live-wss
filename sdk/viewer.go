@@ -22,6 +22,8 @@ const (
 	maxRingBufferSize  = 64936
 	// 环形缓冲区调整阈值百分比
 	bufferResizeThreshold = 80
+	// 单次出站写入最多占用发送协程 1 秒；慢连接会被回收，不能长期阻塞高优先级消息。
+	viewerWriteTimeout = time.Second
 )
 
 // ViewerInfo 用户信息接口，用于扩展用户信息
@@ -109,6 +111,9 @@ type Viewer struct {
 	roomWriteBufSize atomic.Int64 // 接收缓冲区大小
 	roomWriteBufMu   sync.Mutex   // 保护接收缓冲区的调整
 
+	// outbound 是观众侧有界优先级队列；高优先级到达时会逐出尚未发送的低优先级消息。
+	outbound *viewerOutboundQueue
+
 	startTime      time.Time // 加入房间时间
 	lastActiveTime time.Time // 最后活跃时间
 	lastPingTime   time.Time // 最后Ping时间
@@ -149,10 +154,8 @@ func NewViewerWithInfo(roomCtx context.Context, vid string, vname string, conn *
 	now := time.Now()
 	vctx, vctxCancel := context.WithCancel(roomCtx)
 
-	// 初始化动态大小的缓冲区
+	// 入站消息使用可扩展环形缓冲；出站消息使用固定上限的优先级队列，避免每个慢用户占用巨量内存。
 	sendRoomSlots := make([]atomic.Pointer[item], baseRingBufferSize)
-	roomBroadcastSlots := make([]atomic.Pointer[item], baseRingBufferSize)
-	highPrioritySlots := make([]atomic.Pointer[item], baseRingBufferSize) // 高优先级缓冲区
 
 	// 如果没有提供用户信息，使用默认实现
 	if userInfo == nil {
@@ -175,14 +178,11 @@ func NewViewerWithInfo(roomCtx context.Context, vid string, vname string, conn *
 		viewerCtx:       vctx,
 		viewerCtxCancel: vctxCancel,
 
-		// 初始化动态缓冲区
-		sendRoomSlots:      sendRoomSlots,
-		sendRoomBufSize:    atomic.Int64{},
-		roomBroadcastSlots: roomBroadcastSlots,
-		roomWriteBufSize:   atomic.Int64{},
-		highPrioritySlots:  highPrioritySlots, // 添加高优先级缓冲区
-		hasHighPriorityMsg: atomic.Int32{},    // 初始化高优先级消息标志
-
+		// 入站缓冲与观众侧出站优先级队列。
+		sendRoomSlots:    sendRoomSlots,
+		sendRoomBufSize:  atomic.Int64{},
+		roomWriteBufSize: atomic.Int64{},
+		outbound:         newViewerOutboundQueue(defaultViewerOutboundQueueCapacity),
 	}
 }
 
@@ -514,31 +514,16 @@ func (v *Viewer) CollectMessages() [][]byte {
 	return messages
 }
 
-// 观众消息读取器（由观众goroutine执行）
+// messageReader 只消费观众自身的有界出站队列。队列在每次出队时优先返回高优先级消息，
+// 因此高优先级消息最多等待正在进行的一次 WebSocket 写入，而不会等待低优先级积压。
 func (v *Viewer) messageReader() {
-	// 定期检查是否有消息
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-v.viewerCtx.Done():
-			return // 观众退出
-		case <-v.roomCtx.Done():
-			return // 房间关闭
-		case <-ticker.C:
-			// 优先检查高优先级消息
-			hasHighPriorityMsg := v.hasHighPriorityMsg.Load()
-			if hasHighPriorityMsg == 1 {
-				v.processHighPriorityMessages()
-			}
-
-			// 检查普通消息
-			hasNormalMsg := v.hasMessage.Load()
-			if hasNormalMsg == 1 {
-				v.processNormalMessages()
-			}
+		message, ok := v.nextOutboundMessage()
+		if !ok {
+			return
 		}
+		v.receivedMessageCnt.Add(1)
+		v.deliverOutboundMessage(message)
 	}
 }
 
@@ -664,9 +649,11 @@ func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
 		log.Printf("WebSocket conn is nil for viewer %s, skip send messages", v.vid)
 		return
 	}
-	// 设置写超时
-	if err := v.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	// 设置短写超时。高优先级消息最多等待当前一条网络写；连接持续变慢时主动回收，
+	// 以免它在该用户侧无限堆积并长期占用发送协程。
+	if err := v.Conn.SetWriteDeadline(time.Now().Add(viewerWriteTimeout)); err != nil {
 		log.Printf("Failed to set write deadline for viewer %s: %v", v.vid, err)
+		v.Close()
 		return
 	}
 
@@ -694,7 +681,9 @@ func (v *Viewer) SendMessagesToWebSocket(messages [][]byte) {
 		err = v.Conn.WriteMessage(websocket.BinaryMessage, msg)
 		if err != nil {
 			log.Printf("Failed to send message to viewer %s: %v", v.vid, err)
-			continue
+			// Gorilla WebSocket 约定发生写错误后连接状态不再可用；立即关闭，避免后续高优先级消息继续等待。
+			v.Close()
+			return
 		}
 
 		// 增加接收字节数统计
@@ -755,7 +744,10 @@ func (v *Viewer) Close() {
 	}
 	v.sendRoomBufMu.Unlock()
 
-	// 缓冲槽使用原子指针，因此与仍在退出中的收发协程并发时安全。
+	// 关闭队列会唤醒阻塞的发送协程，并释放尚未发送的消息引用。
+	v.outbound.close()
+
+	// 遗留缓冲槽使用原子指针，因此与仍在退出中的收发协程并发时安全。
 	for i := range v.roomBroadcastSlots {
 		v.roomBroadcastSlots[i].Store(nil)
 	}

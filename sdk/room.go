@@ -82,6 +82,10 @@ type Room struct {
 	messageFilter      MessageFilter
 	filterEnabled      atomic.Bool  // Whether filtering is enabled
 	messageFilterLimit atomic.Int64 // 匹配消息限制数量，默认10，则保留十分之一消息
+
+	// adaptiveMessageSampler 只作用于低优先级消息，并按全局在线人数选择采样比例。
+	adaptiveMessageSampler     atomic.Pointer[adaptiveMessageSampler]
+	adaptiveDroppedLowPriority atomic.Uint64
 }
 
 func NewRoom(ctx context.Context, rootName string, roomNumber string, roomMax uint32, firmUUID string) (*Room, error) {
@@ -134,6 +138,10 @@ func NewRoomWithConfig(ctx context.Context, rootName string, roomNumber string, 
 	room.viewerSendWritePos.Store(0)
 	room.viewerSendReadPos.Store(0)
 	room.messageFilterLimit.Store(10)
+	if err := room.SetAdaptiveMessageSampling(config.AdaptiveSamplingRules); err != nil {
+		cancelFunc()
+		return nil, err
+	}
 
 	// 设置房间状态为直播中
 	room.isOpenRoom.Store(true)
@@ -749,24 +757,20 @@ func (r *Room) broadcastToViewers(messages []*MessagePb) {
 	}
 	r.viewerMux.RUnlock()
 
-	// 异步广播给所有观众，不等待完成
+	// 入队操作是常数时间且不会等待网络 I/O；同步遍历避免每个消息/观众组合都创建协程，
+	// 同时保持 broadcastHandler 中消息批次的先后顺序。
 	for _, viewer := range viewers {
-		go func(v *Viewer) {
-			// 检查观众是否活跃
-			if !r.isViewerActive(v) {
-				return
-			}
-			// 发送高优先级消息
-			if len(highPriorityMessages) > 0 {
-				r.sendPriorityMessagesToViewer(v, highPriorityMessages, MessagePriority_HIGH)
-			}
-
-			// 发送低优先级消息
-			if len(lowPriorityMessages) > 0 {
-				r.sendPriorityMessagesToViewer(v, lowPriorityMessages, MessagePriority_LOW)
-			}
-		}(viewer)
+		if !r.isViewerActive(viewer) {
+			continue
+		}
+		if len(highPriorityMessages) > 0 {
+			r.sendPriorityMessagesToViewer(viewer, highPriorityMessages, MessagePriority_HIGH)
+		}
+		if len(lowPriorityMessages) > 0 {
+			r.sendPriorityMessagesToViewer(viewer, lowPriorityMessages, MessagePriority_LOW)
+		}
 	}
+
 }
 
 // sendPriorityMessagesToViewer 发送优先级消息到指定观众
@@ -787,45 +791,14 @@ func (r *Room) sendPriorityMessagesToViewer(viewer *Viewer, messageBytes [][]byt
 
 // 尝试发送消息到观众的环形缓冲区
 func (r *Room) trySendToViewerBuffer(viewer *Viewer, message []byte) bool {
-	writePos := viewer.roomBroadcastWriteAto.Load()
-	nextWritePos := (writePos + 1) % int64(len(viewer.roomBroadcastSlots))
-
-	// 创建新消息
-	newItem := &item{
-		seq:      writePos,
-		data:     message,
-		priority: MessagePriority_LOW,
-	}
-
-	// 直接覆盖（不检查是否满）
-	viewer.roomBroadcastSlots[writePos].Store(newItem)
-	viewer.roomBroadcastWriteAto.Store(nextWritePos)
-
-	viewer.hasMessage.Store(1) // 告诉用户有新消息
-
-	return true // 总是成功
+	// 慢用户只会丢弃自身的低优先级消息，不会阻塞房间的扇出循环。
+	return viewer.enqueueOutboundMessage(message, MessagePriority_LOW)
 }
 
 // 尝试发送高优先级消息到观众的环形缓冲区（插队）
 func (r *Room) trySendHighPriorityToViewerBuffer(viewer *Viewer, message []byte) bool {
-	writePos := viewer.highPriorityWriteAt.Load()
-	nextWritePos := (writePos + 1) % int64(len(viewer.highPrioritySlots))
-
-	// 创建新消息
-	newItem := &item{
-		seq:      writePos,
-		data:     message,
-		priority: MessagePriority_HIGH,
-	}
-
-	// 直接写入高优先级缓冲区
-	viewer.highPrioritySlots[writePos].Store(newItem)
-	viewer.highPriorityWriteAt.Store(nextWritePos)
-
-	// 设置高优先级消息标志
-	viewer.hasHighPriorityMsg.Store(1)
-
-	return true
+	// enqueue 会先逐出该用户尚未发送的低优先级积压，再把高优先级消息放到队首。
+	return viewer.enqueueOutboundMessage(message, MessagePriority_HIGH)
 }
 
 // GetCapacity 获取房间当前最大容纳人数
@@ -1020,11 +993,15 @@ func (r *Room) AddFilterRule(pattern string, action int, replacement string, pri
 
 // 检查消息是否符合过滤规则
 func (r *Room) ApplyMessageFilter(msg *MessagePb, limit int64) (*MessagePb, bool) {
+	// 自适应采样位于通用过滤器之前，避免高并发场景下对最终会被丢弃的低优先级消息执行正则和敏感词检测。
+	if !r.allowAdaptiveLowPriorityMessage(msg) {
+		return nil, false
+	}
 	if !r.filterEnabled.Load() || r.messageFilter == nil {
 		return msg, true // Allow all messages if filter is disabled
 	}
-
 	allow, filteredMsg, err := r.messageFilter.ShouldAllowMessage(msg, limit)
+
 	if err != nil {
 		log.Printf("Error applying message filter: %v", err)
 		return msg, true

@@ -38,6 +38,10 @@ type RoomConfig struct {
 	// CommentPublisher 是可选的评论 MQ 发布器。配置后，评论内容将直接发送到 MQ，
 	// 不会额外保存到独立的 Redis 评论内容键。
 	CommentPublisher CommentPublisher
+
+	// AdaptiveSamplingRules 按全局在线人数分层随机保留低优先级消息。
+	// 空值时关闭自适应采样；高优先级消息始终绕过该策略。
+	AdaptiveSamplingRules []AdaptiveSamplingRule
 }
 
 func (c RoomConfig) withDefaults() RoomConfig {
@@ -61,5 +65,6 @@ func (c RoomConfig) withDefaults() RoomConfig {
 	if c.CommentRetention <= 0 {
 		c.CommentRetention = DefaultCommentRetention
 	}
+	c.AdaptiveSamplingRules = append([]AdaptiveSamplingRule(nil), c.AdaptiveSamplingRules...)
 	return c
 }
